@@ -12,4 +12,9 @@ ravex.log
 dist
 build
 *.egg-info
+# Cargo's build tree and the extension built on the host: the image compiles
+# the crate itself, and a Windows .pyd in the package is not one it can load.
+target
+*.pyd
+*.so
 

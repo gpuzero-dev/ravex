@@ -5,6 +5,7 @@ build/
 dist/
 .venv/
 venv/
+/target
 
 .pytest_cache/
 .mypy_cache/
