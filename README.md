@@ -17,6 +17,12 @@ Ravex is pure Python and needs Python 3.11 or later. It does not depend on
 torch, so that it attaches to whatever build you already have (CUDA, ROCm, CPU)
 instead of pulling another one in.
 
+On Python 3.10 or older, `pip` may not refuse: the first releases, up to 0.0.4,
+said they ran on 3.9, and pip installs one of those instead, which has none of
+what this page describes and fails at `ravex.train_loop`. Check
+`python --version` first; `pip install "ravex>=0.10"` turns that quiet
+downgrade into an error that names the Python version.
+
 Its default checkpoint engine is [Moonclip](https://github.com/gpuzero-dev/moonclip),
 installed with `pip install "ravex[moonclip]"`. Moonclip publishes wheels only
 for Linux x86_64; elsewhere it has to be built from source, and where it is not
