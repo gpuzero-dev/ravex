@@ -24,9 +24,10 @@ what this page describes and fails at `ravex.train_loop`. Check
 downgrade into an error that names the Python version.
 
 Its default checkpoint engine is [Moonclip](https://github.com/gpuzero-dev/moonclip),
-installed with `pip install "ravex[moonclip]"`. Moonclip publishes wheels only
-for Linux x86_64; elsewhere it has to be built from source, and where it is not
-installed Ravex falls back to `torch_save` on its own.
+installed with `pip install "ravex[moonclip]"`. Moonclip publishes wheels for
+Linux on x86_64 and aarch64 and for macOS on Apple silicon (up to its 0.3.1,
+Linux x86_64 only); elsewhere it has to be built from source, and where it is
+not installed Ravex says so and falls back to `torch_save`.
 
 ## Use
 
