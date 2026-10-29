@@ -1,30 +1,37 @@
-"""A plain PyTorch training loop. Nothing in it knows Ravex exists.
-
-Run it, kill it with Ctrl-C part way through, then run it again:
+"""Kill it, run it again, and it carries on: a small MLP on this machine's CPU.
 
     python examples/train_mlp.py
-    # ^C somewhere around step 300
+    # Ctrl-C somewhere around step 300, or `kill` it from another terminal
     python examples/train_mlp.py
 
-The second run continues from the last checkpoint instead of starting over.
-Ravex activates because examples/ravex.yaml sits next to this file.
+The second run says which step it starts at and finishes the same 1000 steps
+the first one would have, with the same losses, because Ravex restores the
+optimizer, the LR scheduler, the RNGs and the position in the dataloader along
+with the weights. Delete ./checkpoints to start over.
 
-Without `ravex enable`, add the explicit form:
+The only Ravex line is the decorator. Its arguments are the configuration a
+`ravex.yaml` beside the working directory could hold instead (GPU-295):
 
-    RAVEX_ENABLED=1 python -c "import ravex; ravex.activate()" ...
-
-or just put `import ravex; ravex.activate()` at the top of your own script.
+- `max_steps` is the length of the whole training across restarts. Without
+  it, a resumed script would run its own `for epoch in range(EPOCHS)` again
+  from the top and train past where the first run would have stopped.
+- `checkpoint_every` is how often a checkpoint is due. With Moonclip installed
+  (`pip install "ravex[moonclip]"`) a small delta is saved at every step on
+  top of that; without it, Ravex writes plain `torch.save` files.
 """
 
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, TensorDataset
 
+import ravex
+
 SAMPLES = 2048
 BATCH = 32
 EPOCHS = 20
 
 
+@ravex.train_loop(max_steps=1000, checkpoint_every=100, storage={"path": "./checkpoints"})
 def main():
     torch.manual_seed(0)
 
@@ -46,20 +53,28 @@ def main():
     )
 
     model.train()
-    step = 0
-    for epoch in range(EPOCHS):
+    started = False
+    for _ in range(EPOCHS):
         for x, y in loader:
+            if not started:
+                # The resume happens as the first batch is fetched, so this is
+                # the first point where `ravex.step()` says where we are.
+                started = True
+                print(f"starting at step {ravex.step()}", flush=True)
+
             loss = ((model(x) - y) ** 2).mean()
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
             scheduler.step()
 
-            step += 1
-            if step % 50 == 0:
-                print(f"epoch {epoch:2d}  step {step:5d}  loss {loss.item():.5f}")
+            if ravex.step() % 50 == 0:
+                # From the step, not from the loop's own counter, which a
+                # resumed run starts again at 0.
+                epoch = (ravex.step() - 1) // len(loader)
+                print(f"epoch {epoch:2d}  step {ravex.step():5d}  loss {loss.item():.5f}", flush=True)
 
-    print("done")
+    print(f"done at step {ravex.step()}")
 
 
 if __name__ == "__main__":

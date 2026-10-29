@@ -289,6 +289,11 @@ def main(argv=None) -> int:
             "it on or off."
         ),
     )
+    from ravex import __version__
+
+    # The literal the wheel's metadata reads, so the two never disagree; the
+    # comment in pyproject.toml promised this flag before it existed (GPU-295).
+    parser.add_argument("--version", action="version", version=f"ravex {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
     subparsers.add_parser(

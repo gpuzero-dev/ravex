@@ -24,18 +24,41 @@ installed Ravex falls back to `torch_save` on its own.
 
 ## Use
 
+This runs as it is, on a CPU, in a few seconds. Save it as `train.py`:
+
 ```python
+import torch
 import ravex
 
-@ravex.train_loop(preemption_handler=True)
+@ravex.train_loop(max_steps=2000)
 def train():
-    model = build_model()
-    optimizer = torch.optim.Adam(model.parameters())
-    for batch in loader:
-        ...
+    torch.manual_seed(0)
+    model = torch.nn.Sequential(torch.nn.Linear(16, 64), torch.nn.ReLU(), torch.nn.Linear(64, 1))
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    x = torch.randn(4096, 16)
+    data = torch.utils.data.TensorDataset(x, x.sum(dim=1, keepdim=True))
+    loader = torch.utils.data.DataLoader(data, batch_size=32, shuffle=True)
+    for epoch in range(100):
+        for x, y in loader:
+            loss = torch.nn.functional.mse_loss(model(x), y)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            if ravex.step() % 200 == 0:
+                print(f"step {ravex.step()}  loss {loss.item():.4f}")
 
 train()
 ```
+
+```bash
+python train.py      # press Ctrl-C after a few lines
+python train.py      # the first line is past where you stopped, not step 200
+```
+
+The checkpoints are in `./checkpoints`; delete it to start over. `max_steps`
+is the length of the whole training across restarts: without it, the
+resumed script would run its own `for epoch in range(100)` from the top again.
+For a longer example, see [`examples/train_mlp.py`](examples/train_mlp.py).
 
 A resumed run continues rather than restarting from a good place, because
 Ravex restores everything around the weights too: optimizer state, LR
@@ -89,7 +112,7 @@ live objects; Moonclip decides how the bytes are written and where, bucket
 included. So `storage` says where the bucket is, and the credentials are never
 read by Ravex or from the config file: Moonclip reads them from
 `MOONCLIP_S3_ACCESS_KEY` / `MOONCLIP_S3_SECRET_KEY` or the usual `AWS_*` pair
-([Moonclip's README](https://github.com/gpuzero-dev/moonclip#s3-backend)).
+([Moonclip's README](https://github.com/gpuzero-dev/moonclip#s3)).
 
 **More than one GPU or machine.** DDP and FSDP resume on every rank. With FSDP,
 `gather` writes one checkpoint that loads at any world size, bounded by what

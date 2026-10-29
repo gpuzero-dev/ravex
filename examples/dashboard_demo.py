@@ -167,7 +167,13 @@ def main() -> None:
     print("interrupted: resuming")
     train(store("interrupted"), lr=5e-3, width=96, steps=args.steps, seed=2)
 
-    print(f"\ndone. Serve them with:  python -m gpuzero --root {args.root}")
+    # Not a command to serve them: that pointed at a dashboard module that is
+    # not part of this package, so whoever installed Ravex could not run it
+    # (GPU-295). What every install has is the reader.
+    print(
+        f"\ndone. The runs are in {args.root}/; read one with "
+        f"ravex.metrics.read({os.path.join(args.root, 'interrupted')!r})"
+    )
 
 
 if __name__ == "__main__":

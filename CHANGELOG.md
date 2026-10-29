@@ -28,6 +28,24 @@
   claimed and installed nothing. The teardown now gives SIGTERM back to the
   default, last, after the final checkpoint; a handler the script installed in
   the meantime is left in place.
+- **The README's quickstart and `examples/train_mlp.py` did not run (GPU-295).**
+  The quickstart called `build_model()` and iterated a `loader` it never
+  defined, so copied as printed it raised `NameError`. `train_mlp.py`, the
+  "kill it and run it again" example, relied on `examples/ravex.yaml` being
+  found by the autoload that 0.0.5 removed: Ravex never switched on, the run
+  ignored `max_steps: 1000` and trained 1250 steps, and the second run started
+  over. The command its docstring offered instead raised `AttributeError`
+  (`ravex.activate` is gone too). The quickstart is now a script that runs on a
+  CPU in seconds, and `train_mlp.py` uses `@ravex.train_loop` with its
+  configuration as arguments; `examples/ravex.yaml` is gone. Both are run by
+  `tests/distributed/test_examples.py`, stopped with Ctrl-C and run again, and
+  `train_mlp.py`'s resumed losses are checked against a run never stopped.
+- `ravex --version`, which the comment in `pyproject.toml` already promised.
+- `examples/dashboard_demo.py` ended by suggesting `python -m gpuzero`, a
+  module that is not part of this package; it now says where the runs are and
+  how to read one.
+- The README's link to Moonclip's S3 section pointed at an anchor that does
+  not exist.
 
 ## 0.10.1 — 2026-10-24
 
