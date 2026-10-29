@@ -44,8 +44,10 @@ position in the dataset. The test suite holds it to the strong form of that: a
 run killed at step 20 and resumed produces the same losses, step by step, and
 the same final weights as the run that was never interrupted.
 
-`preemption_handler=True` catches SIGTERM and tries to write a final checkpoint
-before the process is killed. Any other keyword argument to `train_loop` is a
+On SIGTERM (a spot preemption, `scancel`, `docker stop`) the training stops at
+the next iteration, writes a final checkpoint and exits with status 143; run
+the same command again and it resumes there. That is on by default, and
+`preemption_handler=False` turns it off. Any other keyword argument to `train_loop` is a
 configuration override, and an unknown name raises `TypeError` rather than
 being ignored.
 

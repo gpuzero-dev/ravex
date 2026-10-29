@@ -1,5 +1,34 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **SIGTERM was caught and then ignored on every run but a sharded model
+  across several machines (GPU-294).** The handler, on by default, only raises
+  a flag, and since GPU-92 the only code reading that flag was the coordinated
+  emergency path, which runs for a sharded model split across machines. One
+  process, a replicated (DDP) job, a sharded model on one machine: the signal
+  no longer killed the process and nothing acted on it, so the run trained on
+  to its end and exited 0, and `scancel`, `docker stop`, `timeout` and a
+  cloud's preemption stopped nothing until their SIGKILL. Measured on a
+  one-process run before the fix: SIGTERM at step 10, the training function
+  returned 16.7 s later at step 300, exit status 0. Now the training stops at
+  the top of the next iteration (the dataloader's next batch,
+  `ravex.batch_boundary()`, or the first forward after the step; mid-step when
+  none of those exists), the decorator's teardown writes the final checkpoint
+  and flushes, `status.json` says `interrupted`, and the process exits with
+  status 143. The same run after the fix: stopped at step 10, exited 0.1 s
+  after the signal, and the next run of the same command resumed at step 10.
+  A sharded model on one machine stops and flushes but skips the final
+  checkpoint, as at any shutdown, because gathering it can hang.
+- **The SIGTERM handler outlived the run (GPU-294).** It was never removed, so
+  after `train_loop` returned the process could no longer be stopped with
+  SIGTERM, and a second `train_loop` in the same process found the signal
+  claimed and installed nothing. The teardown now gives SIGTERM back to the
+  default, last, after the final checkpoint; a handler the script installed in
+  the meantime is left in place.
+
 ## 0.10.1 — 2026-10-24
 
 ### Changed

@@ -120,6 +120,20 @@ def _seconds(value: float) -> str:
     return "%.3g" % value if value < 1000 else "%.0f" % value
 
 
+class Preempted(BaseException):
+    """SIGTERM arrived, and the training stops at the first safe point (GPU-294).
+
+    Raised from inside the training loop, at the top of the iteration after
+    the signal, on every run the coordinated emergency path does not cover:
+    one process, a replicated (DDP) job, a sharded model on one machine.
+    ``ravex.train_loop`` catches it, lets its teardown write the final
+    checkpoint and flush, records the run as interrupted, and then lets
+    SIGTERM do what it came to do. A ``BaseException``, like
+    ``KeyboardInterrupt``, so a script's own ``except Exception`` around its
+    step does not swallow it and train on until SIGKILL.
+    """
+
+
 class RavexRuntime:
     """Singleton runtime. Build it through :func:`get_runtime`."""
 
@@ -137,6 +151,9 @@ class RavexRuntime:
     #: Set only from `_install_signal_handler`'s closure - the one thing that
     #: code is allowed to do. See `on_step` for why.
     _emergency_requested = False
+    #: The SIGTERM handler this runtime installed, kept so `shutdown` removes
+    #: exactly that one and nothing the script installed since (GPU-294).
+    _sigterm_handler = None
     #: Whether this rank participates in the SIGTERM detection channel at
     #: all: sharded, multi-machine, and turned on. Decided once from facts
     #: identical on every rank (config plus launcher environment), the same
@@ -747,6 +764,40 @@ class RavexRuntime:
                 self._checkpoint_due = False
                 self.checkpoint()
 
+        if not self.registry.dataloaders and not self._boundary_delivered:
+            # The same hatch as the checkpoint just above, for the same loop:
+            # with no iteration top ever delivered, the stop has nowhere
+            # better to happen than here, mid-step, and waiting for a
+            # boundary that never comes is the bug this exists to fix.
+            self._stop_if_preempted()
+
+    def _stop_if_preempted(self) -> None:
+        """End the training here if SIGTERM landed and nothing else will (GPU-294).
+
+        The handler only raises a flag, and until this the flag was read only
+        by `_check_emergency_signal`, which runs only for a sharded model
+        across several machines. Everywhere else - one process, DDP, a sharded
+        model on one machine - SIGTERM was caught and then ignored: no last
+        checkpoint and no exit, the run trained on until the cloud's SIGKILL,
+        and `scancel`, `docker stop` and `timeout` stopped working on it.
+
+        Raising rather than saving and exiting from here, so the stop goes out
+        through the decorator's own teardown, the path a Ctrl-C already takes:
+        the final checkpoint where it is safe (a sharded model skips it, see
+        `_final_checkpoint_is_safe`), the flush, the run recorded as
+        interrupted. On DDP each process acts on its own flag without waiting
+        for the others, which is safe because only rank 0 writes and its save
+        is not a collective.
+        """
+        if not self._emergency_requested or self._emergency_coordination_active():
+            return
+        logger.warning(
+            "SIGTERM received: stopping at step %d. The final checkpoint and "
+            "the flush run on the way out, then the process exits.",
+            self.registry.step_count,
+        )
+        raise Preempted("SIGTERM at step %d" % self.registry.step_count)
+
     def _saves_every_step(self) -> bool:
         """Whether a save is due at every step rather than every checkpoint.
 
@@ -870,10 +921,12 @@ class RavexRuntime:
         if self._round_due:
             self._round_due = False
             self._close_outer_round()
-        if not self._checkpoint_due:
-            return
-        self._checkpoint_due = False
-        self.checkpoint()
+        if self._checkpoint_due:
+            self._checkpoint_due = False
+            self.checkpoint()
+        # Last, so a checkpoint that was due anyway is the one the teardown
+        # finds already written: the stop costs no second save of this step.
+        self._stop_if_preempted()
 
     # ─── metrics, GPU-147 ───────────────────────────────────────────────
 
@@ -3664,9 +3717,10 @@ class RavexRuntime:
         *second* collective from inside a context that might already be
         halfway through a first one: not a hang this code introduces on
         purpose, but one it could trigger by accident. So the handler only
-        raises a flag; `on_step` — ordinary code, on the training thread,
-        between collectives rather than astride one — does the rest at the
-        next safe point. See `_check_emergency_signal`.
+        raises a flag; ordinary code on the training thread, between
+        collectives rather than astride one, does the rest at the next safe
+        point: `_check_emergency_signal` for a sharded model across machines,
+        `_stop_if_preempted` for every other run (GPU-294).
         """
         if not self.config.handle_sigterm or os.name == "nt":
             return
@@ -3684,14 +3738,36 @@ class RavexRuntime:
                 # of SIGTERM only terminates the process when nothing has
                 # claimed the signal, and this function only reaches here
                 # having confirmed that was true at install time. It stays
-                # alive until `_check_emergency_signal` finishes with it, or
-                # until the cloud's own grace period runs out and sends
-                # SIGKILL, which no handler anywhere can catch or delay.
+                # alive until `_check_emergency_signal` or
+                # `_stop_if_preempted` finishes with it, or until the cloud's
+                # own grace period runs out and sends SIGKILL, which no
+                # handler anywhere can catch or delay.
                 self._emergency_requested = True
 
             signal.signal(signal.SIGTERM, handler)
+            self._sigterm_handler = handler
         except (ValueError, OSError) as exc:  # pragma: no cover - platform dependent
             logger.debug("Could not install SIGTERM handler: %s", exc)
+
+    def _remove_signal_handler(self) -> None:
+        """Give SIGTERM back to the default once the run is over (GPU-294).
+
+        Left installed, the handler outlived the run: after `train_loop`
+        returned, SIGTERM set a flag on a runtime nobody read any more and the
+        process could no longer be stopped with it. And the next `train_loop`
+        in the same process found the signal already claimed and installed
+        nothing. Only our own handler is removed; one the script installed
+        since then is the script's.
+        """
+        handler = getattr(self, "_sigterm_handler", None)
+        if handler is None:
+            return
+        self._sigterm_handler = None
+        try:
+            if signal.getsignal(signal.SIGTERM) is handler:
+                signal.signal(signal.SIGTERM, signal.SIG_DFL)
+        except (ValueError, OSError) as exc:  # pragma: no cover - not the main thread
+            logger.debug("Could not remove the SIGTERM handler: %s", exc)
 
     def _emergency_coordination_active(self) -> bool:
         """Whether this run should probe for SIGTERM on other ranks at all.
@@ -4211,6 +4287,10 @@ class RavexRuntime:
             logger.info("Ravex shutdown complete at step %d", self.registry.step_count)
         except Exception as exc:
             logger.warning("Shutdown error: %s", exc)
+        finally:
+            # Last, not first: a second SIGTERM during the final checkpoint
+            # above should still find the flag, not kill a write half done.
+            self._remove_signal_handler()
 
 
 class _RoundThread:

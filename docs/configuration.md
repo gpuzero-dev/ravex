@@ -41,7 +41,7 @@ ravex status
 | `replicate_every` | `RAVEX_REPLICATE_EVERY` | `10` | Checkpoints between copies of each rank's store to a peer on another machine. Only ever used when the storage turns out to be neither remote nor shared. `0` turns it off. See [More than one machine](#more-than-one-machine). |
 | `track_dataloaders` | `RAVEX_TRACK_DATALOADERS` | `true` | Track and restore the dataset position. |
 | `track_rng` | `RAVEX_TRACK_RNG` | `true` | Save and restore torch / CUDA / Python / NumPy RNG state. |
-| `handle_sigterm` | `RAVEX_HANDLE_SIGTERM` | `true` | Checkpoint on SIGTERM — the signal a preempted spot instance receives. Only installed if nothing else has claimed the signal. |
+| `handle_sigterm` | `RAVEX_HANDLE_SIGTERM` | `true` | On SIGTERM — the signal a preempted spot instance receives, and what `scancel`, `docker stop` and `timeout` send — stop at the next iteration, write a final checkpoint and exit with status 143. Only installed if nothing else has claimed the signal, and removed when the run ends. See [SIGTERM on one machine](#sigterm-on-one-machine). |
 | `emergency_coordination` | `RAVEX_EMERGENCY_COORDINATION` | `true` | For sharded models split across more than one machine only: wait for every rank to notice a SIGTERM before attempting the collective save FSDP checkpointing needs. No effect on a replicated (DDP) job or a single machine. See [Emergency checkpoint on preemption](#emergency-checkpoint-on-preemption-sharded-models). |
 | `emergency_check_every` | `RAVEX_EMERGENCY_CHECK_EVERY` | `1` | Optimizer steps between checks for a SIGTERM on any rank. Only spent when `emergency_coordination` is active for this run (sharded, multi-machine). |
 | `emergency_timeout` | `RAVEX_EMERGENCY_TIMEOUT` | `20` | Seconds before the SIGTERM-detection channel gives up, if the rank that raised it disappears before the others get there. Isolated from the main process group's own timeout — see the section below. |
@@ -885,6 +885,28 @@ checkpoints leave the machines on their own, and a rank that comes up with an
 empty disk pulls its store back. See
 [More than one machine](how-it-works.md#more-than-one-machine) for what each
 one actually guarantees.
+
+### SIGTERM on one machine
+
+With `handle_sigterm` on (the default), a SIGTERM stops the training at the
+top of the next iteration: the dataloader's next batch, `ravex.batch_boundary()`,
+or the first forward after the step. The final checkpoint of that step is
+written on the way out, the run is recorded as `interrupted`, and the process
+then exits as SIGTERM asks, with status 143 — which is what `scancel`,
+`docker stop`, `timeout` and a cloud's preemption read as "stopped as asked".
+Running the same command again resumes at that step.
+
+This is what happens for one process, for a replicated (DDP) job, where every
+process acts on its own signal and only rank 0 writes, and for a sharded model
+on one machine, which stops and flushes but skips the final checkpoint because
+gathering a sharded model at shutdown can hang (its last periodic checkpoint
+stands). A sharded model across several machines takes the coordinated path in
+the next section instead.
+
+The stop is raised inside the training function as `ravex._runtime.Preempted`,
+a `BaseException` like `KeyboardInterrupt`, so an `except Exception` around a
+step does not swallow it. Until 0.10.1 the signal was caught and then ignored
+on all of these runs (GPU-294).
 
 ### Emergency checkpoint on preemption (sharded models)
 

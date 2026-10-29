@@ -93,9 +93,12 @@ def train_loop(
     ``preemption_handler``
         Catch SIGTERM and try to get a final checkpoint down before the process
         is killed — a spot instance gets roughly ten seconds' notice. Sets
-        ``handle_sigterm``. Read what that promises in the changelog for GPU-92
-        before relying on it: on a sharded model it is a best-effort attempt
-        that will often not complete, not a guarantee.
+        ``handle_sigterm``, which is on by default. The training stops at the
+        next iteration, the final checkpoint is written, and the process exits
+        with status 143 (GPU-294). Read what that promises in the changelog for
+        GPU-92 before relying on it for a sharded model across several machines:
+        there it is a best-effort attempt that will often not complete, not a
+        guarantee.
 
     ``elastic``
         Resume onto a *different* number of ranks without the process exiting.
@@ -134,9 +137,23 @@ def train_loop(
     def decorate(function: F) -> F:
         @functools.wraps(function)
         def wrapper(*args: object, **kwargs: object):
+            from ravex._runtime import Preempted
+
             _activate(**overrides)
+            preempted = False
             try:
                 return function(*args, **kwargs)
+            except Preempted:
+                # SIGTERM, stopped at a safe point (GPU-294). Not re-raised:
+                # the teardown below writes the final checkpoint, and then the
+                # process dies of the signal it was sent, which is what the
+                # scheduler that sent it waits for - not a traceback.
+                from ravex._runtime import get_runtime
+
+                runtime = get_runtime(create=False)
+                if runtime is not None:
+                    runtime.exit_state = "interrupted"
+                preempted = True
             except _RunOver as over:
                 # The run ended while this node was out of it (GPU-186): the
                 # training stops here, as the others' did, and it finished.
@@ -158,6 +175,8 @@ def train_loop(
                 raise
             finally:
                 deactivate()
+                if preempted:
+                    _die_of_sigterm()
 
         return wrapper  # type: ignore[return-value]
 
@@ -166,6 +185,21 @@ def train_loop(
         # fine — `ravex.yaml` and the environment still apply.
         return decorate(_function)
     return decorate
+
+
+def _die_of_sigterm() -> None:
+    """End the process the way the SIGTERM it was sent would have (GPU-294).
+
+    By the time this runs the teardown has written the final checkpoint and
+    flushed, so the default action is safe to let through: exit status 143,
+    which is what `scancel`, `docker stop`, `timeout` and a cloud's preemption
+    read as "stopped as asked", where a clean 0 would say the run finished.
+    """
+    import os
+    import signal
+
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
+    os.kill(os.getpid(), signal.SIGTERM)
 
 
 def _exit_state(exc: BaseException) -> str:
