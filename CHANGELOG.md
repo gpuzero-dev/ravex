@@ -4,6 +4,10 @@
 
 ### Added
 
+- The README says how Ravex sits next to Lightning, Accelerate, the Hugging
+  Face Trainer, DCP and W&B, what the version numbers promise, and what GPU
+  Zero adds (GPU-310). `CONTRIBUTING.md`, `SECURITY.md` and issue templates;
+  `NOTICE` points at gpuzero-dev.
 - **A resume says so (GPU-308).** One line on stderr, whatever the log level,
   from rank 0: `ravex: resumed from step 1400 in ./checkpoints; it stops at
   step 2000 (max_steps)`, or that no `max_steps` is set and the script's loop

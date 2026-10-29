@@ -166,6 +166,30 @@ The full option list, with the measurements behind the defaults:
 [docs/configuration.md](docs/configuration.md). How the patches, the step
 count and the resume work: [docs/how-it-works.md](docs/how-it-works.md).
 
+## Next to other tools
+
+- **PyTorch Lightning, Accelerate, the Hugging Face Trainer** have their own
+  checkpointing, resumed by passing the checkpoint back. Ravex works under
+  them as under a plain loop, since it hooks PyTorch itself, and also puts
+  back the counter their loop stops on; it warns when the framework's own
+  checkpointing would save the same thing twice. Use one of the two.
+- **torch DCP** is a format and a save call; Ravex decides when to save, what,
+  and how to put it back into a live run, and writes through Moonclip or
+  `torch.save` (DCP is read, to resume from a checkpoint another framework
+  wrote: `convert_foreign`).
+- **W&B, MLflow** keep working as they are: Ravex does not touch their calls,
+  and its own `log_metrics` is optional.
+
+## Versioning and compatibility
+
+Ravex is 0.x. A patch release (0.10.x) only fixes. A minor release may change
+an option's default or remove what was deprecated, each said in the
+CHANGELOG; what is removed warns for at least one minor release first. A
+newer Ravex resumes runs an older one wrote. An older one does not resume a
+newer one's checkpoint: it says so and starts from scratch, so pin a minor
+version (`ravex~=0.10.1`) for a run that may restart on another machine.
+Python 3.11 and later, each for as long as CPython supports it.
+
 ## Limits
 
 - Under HuggingFace `Trainer` and Lightning the state comes back exactly, but
@@ -181,6 +205,13 @@ count and the resume work: [docs/how-it-works.md](docs/how-it-works.md).
   a failure inside Ravex never stops the training (`fallback_on_error`).
 
 What changed between versions is in the [CHANGELOG](CHANGELOG.md).
+
+## Ravex and GPU Zero
+
+[GPU Zero](https://gpuzero.dev) is a hosted service built on Ravex and
+Moonclip: it shows a run's metrics and checkpoints, resumes or forks it from
+any checkpoint, and starts GPUs in your own cloud account for it. Ravex does
+not need it, and sends it nothing unless a run is given its address.
 
 ## Development
 
