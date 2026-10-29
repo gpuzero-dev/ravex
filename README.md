@@ -144,8 +144,11 @@ stopped. Leave it unset when a resume must be exact
 live objects; Moonclip decides how the bytes are written and where, bucket
 included. So `storage` says where the bucket is, and the credentials are never
 read by Ravex or from the config file: Moonclip reads them from
-`MOONCLIP_S3_ACCESS_KEY` / `MOONCLIP_S3_SECRET_KEY` or the usual `AWS_*` pair
-([Moonclip's README](https://github.com/gpuzero-dev/moonclip#s3)).
+`MOONCLIP_S3_ACCESS_KEY` / `MOONCLIP_S3_SECRET_KEY`, the usual `AWS_*` pair, a
+profile in `~/.aws/credentials`, or the machine's IAM role
+([Moonclip's README](https://github.com/gpuzero-dev/moonclip#s3)). Restoring
+unpickles part of a checkpoint, so give write access to the bucket only to
+what you would let run code on your training machines.
 
 **More than one GPU or machine.** DDP and FSDP resume on every rank. With FSDP,
 `gather` writes one checkpoint that loads at any world size, bounded by what
