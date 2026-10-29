@@ -7,7 +7,10 @@
 The second run says which step it starts at and finishes the same 1000 steps
 the first one would have, with the same losses, because Ravex restores the
 optimizer, the LR scheduler, the RNGs and the position in the dataloader along
-with the weights. Delete ./checkpoints to start over.
+with the weights. The checkpoints go to ./checkpoints, the default; delete it
+to start over. The store is left out of the decorator on purpose: an argument
+there wins over the environment, and a platform that runs the script names
+the store through `RAVEX_STORAGE_PATH`.
 
 The only Ravex line is the decorator. Its arguments are the configuration a
 `ravex.yaml` beside the working directory could hold instead (GPU-295):
@@ -31,7 +34,7 @@ BATCH = 32
 EPOCHS = 20
 
 
-@ravex.train_loop(max_steps=1000, checkpoint_every=100, storage={"path": "./checkpoints"})
+@ravex.train_loop(max_steps=1000, checkpoint_every=100)
 def main():
     torch.manual_seed(0)
 
