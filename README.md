@@ -17,7 +17,7 @@ Ravex is pure Python and needs Python 3.11 or later. It does not depend on
 torch, so that it attaches to whatever build you already have (CUDA, ROCm, CPU)
 instead of pulling another one in.
 
-Its default checkpoint engine is [Moonclip](https://github.com/JHNMACHINE/moonclip),
+Its default checkpoint engine is [Moonclip](https://github.com/gpuzero-dev/moonclip),
 installed with `pip install "ravex[moonclip]"`. Moonclip publishes wheels only
 for Linux x86_64; elsewhere it has to be built from source, and where it is not
 installed Ravex falls back to `torch_save` on its own.
@@ -87,7 +87,7 @@ live objects; Moonclip decides how the bytes are written and where, bucket
 included. So `storage` says where the bucket is, and the credentials are never
 read by Ravex or from the config file: Moonclip reads them from
 `MOONCLIP_S3_ACCESS_KEY` / `MOONCLIP_S3_SECRET_KEY` or the usual `AWS_*` pair
-([Moonclip's README](https://github.com/JHNMACHINE/moonclip#s3-backend)).
+([Moonclip's README](https://github.com/gpuzero-dev/moonclip#s3-backend)).
 
 **More than one GPU or machine.** DDP and FSDP resume on every rank. With FSDP,
 `gather` writes one checkpoint that loads at any world size, bounded by what
