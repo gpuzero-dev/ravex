@@ -61,10 +61,22 @@ python train.py      # press Ctrl-C after a few lines
 python train.py      # the first line is past where you stopped, not step 200
 ```
 
-The checkpoints are in `./checkpoints`; delete it to start over. `max_steps`
-is the length of the whole training across restarts: without it, the
-resumed script would run its own `for epoch in range(100)` from the top again.
-For a longer example, see [`examples/train_mlp.py`](examples/train_mlp.py).
+The checkpoints are in `./checkpoints`; delete it to start over. Ravex says
+two things on stderr, whatever the log level: where the first checkpoint went,
+and, on a restart, the step it came back at:
+
+```text
+ravex: resumed from step 1400 in ./checkpoints; it stops at step 2000 (max_steps)
+```
+
+`announce=False` silences them; nothing is sent anywhere.
+
+**Set `max_steps`.** It is the length of the whole training across restarts,
+and it is what makes a resumed run end where the uninterrupted one would have:
+without it, the resumed script runs its own `for epoch in range(100)` from the
+top again, from the step it came back at, and trains more than the run that
+never stopped. For a longer example, see
+[`examples/train_mlp.py`](examples/train_mlp.py).
 
 A resumed run continues rather than restarting from a good place, because
 Ravex restores everything around the weights too: optimizer state, LR
@@ -80,11 +92,10 @@ the same command again and it resumes there. That is on by default, and
 configuration override, and an unknown name raises `TypeError` rather than
 being ignored.
 
-The decorator is the only way in. Up to 0.0.5 a `.pth` file in site-packages
-attached Ravex to any process with a `ravex.yaml` above it; it was removed so
-that nothing is ever checkpointed by code that does not say so. Importing
-Ravex does nothing until a decorated function is called, and its patches on
-PyTorch come off when that function returns or raises.
+The decorator is the only way in: nothing is ever checkpointed by code that
+does not say so. Importing Ravex does nothing until a decorated function is
+called, and its patches on PyTorch come off when that function returns or
+raises.
 
 When "noticed on its own" is a guess, such as two models of which only one
 trains, or an optimizer built before the function was entered, name it with
@@ -98,7 +109,7 @@ step; `ravex.batch_boundary()` hands it over by hand where neither is seen.
 `ravex.yaml`, at or above the working directory:
 
 ```yaml
-checkpoint_every: 500        # optimizer steps between checkpoints (default 100)
+checkpoint_every: 500        # optimizer steps between checkpoints (default 100); see below for Moonclip
 backend: moonclip            # moonclip | torch_save
 storage:
   type: local                # local | s3 | r2
@@ -112,6 +123,22 @@ Every option is also read from a `RAVEX_*` environment variable, which wins
 over the file, and the keyword arguments to `train_loop` win over both. A
 resume is the default (`resume: true`); `RAVEX_ENABLED=0` turns Ravex off for
 one run without touching the code.
+
+**How often it saves.** With `torch_save`, a checkpoint every
+`checkpoint_every` steps, and `keep_last` of them are kept. With Moonclip, the
+default, Ravex saves a small delta against the last full snapshot at *every*
+step, so a crash costs at most one step; `checkpoint_every` is then how often
+the store is synced to a bucket and the window it keeps (the last that many
+steps and the full they stand on), and `keep_last` is not used. A run of 147
+steps holds about a hundred snapshots: that is the design, not a leak.
+`delta: false` goes back to one full save every `checkpoint_every`
+([docs](docs/configuration.md#a-delta-at-every-step)).
+
+**Precision.** `save_dtype` (Moonclip only) stores parts of the checkpoint at
+a lower precision to make it smaller. It is lossy: a run resumed from a
+`bf16` optimizer state is close to, not identical with, the run that never
+stopped. Leave it unset when a resume must be exact
+([docs](docs/configuration.md#precision-per-component)).
 
 **Storage.** Ravex decides when to save and what, and puts it back into the
 live objects; Moonclip decides how the bytes are written and where, bucket

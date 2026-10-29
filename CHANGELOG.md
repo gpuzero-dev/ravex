@@ -2,6 +2,30 @@
 
 ## Unreleased
 
+### Added
+
+- **A resume says so (GPU-308).** One line on stderr, whatever the log level,
+  from rank 0: `ravex: resumed from step 1400 in ./checkpoints; it stops at
+  step 2000 (max_steps)`, or that no `max_steps` is set and the script's loop
+  decides; the same for a fork; and on a fresh run, where the first checkpoint
+  went. Without a log file the log shows only warnings, so a resume that
+  worked said nothing and could not be told from a fresh start.
+  `announce: false` (`RAVEX_ANNOUNCE=0`) silences them.
+- `dir(ravex)` lists the API only, not `Any`, `functools`, `logging` and the
+  other names the package imports to implement it.
+
+### Changed
+
+- **The cadence warning shows its times, and waits (GPU-308).** It printed
+  `0.0s of handoff per 0.0s step` as "37% of wall time", at step 12 of a tiny
+  model. Times under a second are now in milliseconds, and it is not given
+  before step 50 or for a handoff under 10 ms.
+- The README says what `checkpoint_every` means with Moonclip (a delta at
+  every step; the sync and window interval), that `save_dtype` makes a resume
+  inexact, and that `max_steps` is what makes a resumed run end where an
+  uninterrupted one would; the history of the `.pth` autoload is left to this
+  file.
+
 ### Fixed
 
 - **SIGTERM was caught and then ignored on every run but a sharded model

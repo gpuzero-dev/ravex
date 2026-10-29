@@ -53,6 +53,16 @@ _FAILOVER_ROUND_KEY = "ravex/gpu229/round/%d"
 
 _LOG_FORMAT = "%(asctime)s [ravex] %(levelname)s %(message)s"
 
+
+def _duration(seconds: float) -> str:
+    """A time a reader can take in: milliseconds under a second. "0.0s of
+    handoff per 0.0s step" was a warning about two numbers it did not show
+    (GPU-308)."""
+    if seconds < 1:
+        return "%d ms" % round(seconds * 1000)
+    return "%.1f s" % seconds
+
+
 #: How many further optimizer steps a due round may survive before the
 #: runtime says out loud that nobody is closing it. The dataloader path
 #: cannot reach this: the boundary is the top of the next iteration, which
@@ -297,6 +307,10 @@ class RavexRuntime:
         #: ``{run, step}`` of the run this one forked from, once the fork has
         #: happened; written into ``run.json`` (GPU-149).
         self._fork_parent: Optional[Dict[str, Any]] = None
+        #: Whether this execution has said where it stands, on stderr: that it
+        #: came back at a step, or where its first checkpoint went (GPU-308).
+        #: One line per execution, never one per checkpoint.
+        self._announced = False
         #: Sends the run to the platform's backend (GPU-156). None without
         #: `metrics_endpoint`.
         self._shipper: Any = None
@@ -2586,6 +2600,8 @@ class RavexRuntime:
                 defer_rng=defer_rng, per_rank=self._per_rank_active()
             )
             self._resume_notice = resume_manager.notice
+            if resumed:
+                self._announce_resume("resumed from step %d" % self.registry.step_count)
             if not resumed and self.config.require_resume:
                 raise NothingToResume(
                     "This run must resume (require_resume), and its store %s holds no "
@@ -2728,6 +2744,9 @@ class RavexRuntime:
                 parent_record.get("run_id") or source,
                 step,
                 self.config.storage.path,
+            )
+            self._announce_resume(
+                "forked from %s at step %d" % (parent_record.get("run_id") or source, step)
             )
         return applied
 
@@ -3233,6 +3252,13 @@ class RavexRuntime:
             ", ".join("%s %.3fs" % item for item in phases.items()),
         )
         self._warn_if_cadence_is_expensive(step, started, finished, phases)
+        if checkpoint and not self._announced:
+            self._announced = True
+            self._announce(
+                "first checkpoint at step %d, in %s. Run the same command again after a "
+                "crash or a stop and it resumes from the newest"
+                % (step, self.config.storage.path)
+            )
         if checkpoint:
             # Every checkpoint, not every step: it is a small file, and a
             # reader judging whether a run is alive needs the timestamp
@@ -3614,11 +3640,57 @@ class RavexRuntime:
         taken = step // max(self.config.checkpoint_every, 1)
         return taken % self.config.replicate_every == 0
 
+    def _announce(self, message: str) -> None:
+        """One line on stderr, whatever the log level, on rank 0 (GPU-308).
+
+        For the two moments somebody running a script wants to see without
+        asking: that a restart came back where it stopped, and that the run
+        is being kept at all. The log is for everything else, and without a
+        log file it shows only warnings, which neither of these is.
+        ``announce: false`` turns them off; nothing is sent anywhere.
+        """
+        if not self.config.announce or get_rank() != 0:
+            return
+        try:
+            sys.stderr.write("ravex: %s\n" % message)
+            sys.stderr.flush()
+        except (OSError, ValueError):
+            # A closed or broken stderr is no reason to stop training.
+            pass
+
+    def _announce_resume(self, what: str) -> None:
+        """Say the run came back, and how far it will now go.
+
+        The second half is there because a resume with no ``max_steps`` runs
+        the script's own loop from its top again: a restarted
+        ``for epoch in range(100)`` trains a hundred more epochs from the step
+        it came back at, which reads as a resume that did not work.
+        """
+        self._announced = True
+        if self.config.max_steps is not None:
+            until = "it stops at step %d (max_steps)" % self.config.max_steps
+        else:
+            until = (
+                "no max_steps is set, so the script's own loop decides how many more steps "
+                "it trains, counting from its start"
+            )
+        self._announce("%s in %s; %s" % (what, self.config.storage.path, until))
+
     #: Fraction of wall time going into checkpoint handoff above which the
     #: cadence is worth mentioning. A fifth is the point where a reader would
     #: rather have been told: below it the cost reads as overhead, above it as
     #: a choice.
     _CADENCE_WARN_FRACTION = 0.2
+
+    #: Not before this step: the first handoffs pay for warming up (the first
+    #: full, the writer starting, allocations), and a ratio taken there said
+    #: "37% of wall time" at step 12 of a run that settled far below it.
+    _CADENCE_WARN_AFTER_STEP = 50
+
+    #: Nor for a handoff shorter than this, in seconds. A model small enough
+    #: to step in a millisecond spends a large share of nothing on its
+    #: checkpoints, and a warning about it only frightens.
+    _CADENCE_WARN_MIN_COST = 0.01
 
     def _warn_if_cadence_is_expensive(
         self, step: int, started: float, finished: float, phases: dict
@@ -3649,6 +3721,8 @@ class RavexRuntime:
 
         interval = finished - previous
         cost = sum(v for k, v in phases.items() if k != "drain")
+        if step < self._CADENCE_WARN_AFTER_STEP or cost < self._CADENCE_WARN_MIN_COST:
+            return
         if interval <= 0 or cost / interval < self._CADENCE_WARN_FRACTION:
             return
 
@@ -3658,26 +3732,26 @@ class RavexRuntime:
             # the cost is the delta taken at every step.
             logger.warning(
                 "The delta saved at every step is costing %.0f%% of wall time: "
-                "%.1fs of handoff per %.1fs step, at step %d. The run will "
+                "%s of handoff per %s step, at step %d. The run will "
                 "still complete. What a delta costs the loop is the copy of the "
                 "state; save_dtype for the optimizer state halves it, and "
                 "delta: false goes back to a full save every checkpoint_every.",
                 100 * cost / interval,
-                cost,
-                interval,
+                _duration(cost),
+                _duration(interval),
                 step,
             )
             return
         logger.warning(
-            "checkpoint_every=%d is costing %.0f%% of wall time: %.1fs of "
-            "handoff per %.1fs between checkpoints, at step %d. The run will "
+            "checkpoint_every=%d is costing %.0f%% of wall time: %s of "
+            "handoff per %s between checkpoints, at step %d. The run will "
             "still complete and checkpoints are still durable - it is just "
             "spending that share on them. Raising checkpoint_every reduces it "
             "proportionally; the trade is how much progress a crash costs.",
             self.config.checkpoint_every,
             100 * cost / interval,
-            cost,
-            interval,
+            _duration(cost),
+            _duration(interval),
             step,
         )
 

@@ -48,29 +48,50 @@ def test_the_first_checkpoint_says_nothing():
 def test_an_expensive_cadence_is_reported_once():
     runtime, warnings = _runtime(every=2)
     # First handoff only establishes the reference point.
-    _handoff(runtime, 2, 0.0, 10.0, {"drain": 3.0, "collect": 1.6, "store": 1.0})
+    _handoff(runtime, 52, 0.0, 10.0, {"drain": 3.0, "collect": 1.6, "store": 1.0})
     # 2.6s of handoff in a 6s interval: 43%.
-    _handoff(runtime, 4, 10.0, 16.0, {"drain": 3.0, "collect": 1.6, "store": 1.0})
-    _handoff(runtime, 6, 16.0, 22.0, {"drain": 3.0, "collect": 1.6, "store": 1.0})
+    _handoff(runtime, 54, 10.0, 16.0, {"drain": 3.0, "collect": 1.6, "store": 1.0})
+    _handoff(runtime, 56, 16.0, 22.0, {"drain": 3.0, "collect": 1.6, "store": 1.0})
 
     assert len(warnings) == 1, "the observation is made once, not per checkpoint"
     message = warnings[0].getMessage()
     assert "checkpoint_every=2" in message
     assert "43%" in message
+    assert "2.6 s of handoff per 6.0 s" in message
 
 
 def test_with_a_delta_per_step_the_warning_names_the_delta():
     """`checkpoint_every` is not the lever when a delta is saved at every
     step: it moves the syncs, and the cost is the save taken in between."""
     runtime, warnings = _runtime(every=100, delta=True)
-    _handoff(runtime, 1, 0.0, 1.0, {"collect": 0.2, "store": 0.3})
-    _handoff(runtime, 2, 1.0, 2.0, {"collect": 0.2, "store": 0.3})
+    _handoff(runtime, 51, 0.0, 1.0, {"collect": 0.2, "store": 0.3})
+    _handoff(runtime, 52, 1.0, 2.0, {"collect": 0.2, "store": 0.3})
 
     assert len(warnings) == 1
     message = warnings[0].getMessage()
     assert "every step" in message
     assert "50%" in message
+    assert "500 ms of handoff per 1.0 s step" in message
     assert "checkpoint_every=" not in message
+
+
+def test_the_first_steps_say_nothing():
+    """The first handoffs pay for the first full and the writer starting:
+    the run that warned "37% of wall time" at step 12 settled far below it
+    (GPU-308)."""
+    runtime, warnings = _runtime(every=100, delta=True)
+    _handoff(runtime, 11, 0.0, 1.0, {"collect": 0.2, "store": 0.3})
+    _handoff(runtime, 12, 1.0, 2.0, {"collect": 0.2, "store": 0.3})
+    assert warnings == []
+
+
+def test_a_handoff_of_a_few_milliseconds_says_nothing():
+    """A tiny model spends a large share of nothing on its checkpoints:
+    4 ms of an 8 ms step is half, and not worth frightening anyone with."""
+    runtime, warnings = _runtime(every=100, delta=True)
+    _handoff(runtime, 60, 0.0, 0.008, {"collect": 0.002, "store": 0.002})
+    _handoff(runtime, 61, 0.008, 0.016, {"collect": 0.002, "store": 0.002})
+    assert warnings == []
 
 
 def test_replication_counts_against_the_cadence():
@@ -92,9 +113,9 @@ def test_replication_counts_against_the_cadence():
         "store": 0.0,
         "replicate": 151.2,
     }
-    _handoff(runtime, 16, 0.0, 186.4, phases)
+    _handoff(runtime, 56, 0.0, 186.4, phases)
     # 151.4s of cost in the 290.9s until the next one: 52%.
-    _handoff(runtime, 20, 186.4, 477.3, phases)
+    _handoff(runtime, 60, 186.4, 477.3, phases)
 
     assert len(warnings) == 1, "the replication is the cadence cost here"
     assert "52%" in warnings[0].getMessage()
@@ -108,8 +129,8 @@ def test_drain_does_not_count_against_the_cadence():
     behind it.
     """
     runtime, warnings = _runtime(every=20)
-    _handoff(runtime, 20, 0.0, 14.0, {"drain": 11.1, "collect": 1.6, "store": 1.0})
+    _handoff(runtime, 60, 0.0, 14.0, {"drain": 11.1, "collect": 1.6, "store": 1.0})
     # 2.6s of real cost in a 68s interval is 4%, even though the handoff
     # itself was 13.7s.
-    _handoff(runtime, 40, 14.0, 82.0, {"drain": 11.1, "collect": 1.6, "store": 1.0})
+    _handoff(runtime, 80, 14.0, 82.0, {"drain": 11.1, "collect": 1.6, "store": 1.0})
     assert warnings == []

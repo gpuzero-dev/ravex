@@ -61,11 +61,18 @@ __all__ = [
     "__version__",
 ]
 
-F = TypeVar("F", bound=Callable[..., Any])
+
+def __dir__() -> list[str]:
+    """What ``dir(ravex)`` and an editor's completion offer: the API, not the
+    names this module imports to implement it (``Any``, ``functools``,
+    ``logging``...), which looked public to whoever explored it (GPU-308)."""
+    return sorted(__all__)
+
+_F = TypeVar("_F", bound=Callable[..., Any])
 
 
 def train_loop(
-    _function: Optional[F] = None,
+    _function: Optional[_F] = None,
     *,
     preemption_handler: Optional[bool] = None,
     elastic: bool = False,
@@ -134,7 +141,7 @@ def train_loop(
     if preemption_handler is not None:
         overrides["handle_sigterm"] = bool(preemption_handler)
 
-    def decorate(function: F) -> F:
+    def decorate(function: _F) -> _F:
         @functools.wraps(function)
         def wrapper(*args: object, **kwargs: object):
             from ravex._runtime import Preempted

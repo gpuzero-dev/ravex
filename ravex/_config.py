@@ -746,6 +746,12 @@ class RavexConfig:
 
     log_file: Optional[str] = None
     log_level: str = "INFO"
+    #: A line on stderr when the run resumes and when its first checkpoint is
+    #: written, whatever the log level (GPU-308). Without a log file the log
+    #: shows only warnings, so a resume that worked said nothing, and the
+    #: person who restarted the script could not tell it from a fresh start.
+    #: Rank 0 only; nothing is sent anywhere. Also ``RAVEX_ANNOUNCE``.
+    announce: bool = True
     fallback_on_error: bool = True
 
     framework_auto_detect: bool = True
@@ -1013,6 +1019,8 @@ class RavexConfig:
             self.log_file = value or None
         if (value := get("LOG_LEVEL")) is not None:
             self.log_level = value
+        if (value := get("ANNOUNCE")) is not None:
+            self.announce = _as_bool(value, self.announce)
         if (value := get("FALLBACK_ON_ERROR")) is not None:
             self.fallback_on_error = _as_bool(value, self.fallback_on_error)
         if (value := get("RUN_ID")) is not None:
@@ -1114,6 +1122,7 @@ class RavexConfig:
             "track_rng",
             "handle_sigterm",
             "emergency_coordination",
+            "announce",
             "outer_loop",
             "outer_auto_steps",
             "outer_error_feedback",

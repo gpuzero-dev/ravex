@@ -50,6 +50,7 @@ ravex status
 | `fallback_on_error` | `RAVEX_FALLBACK_ON_ERROR` | `true` | On an unexpected error, log it and let training continue; the checkpoint is retried at the next one. Set `false` to raise instead. |
 | `log_file` | `RAVEX_LOG_FILE` | `null` | Log destination. Unset means stderr, WARNING and above only. |
 | `log_level` | `RAVEX_LOG_LEVEL` | `INFO` | |
+| `announce` | `RAVEX_ANNOUNCE` | `true` | One line on stderr from rank 0, whatever the log level: where the first checkpoint went, and on a restart the step it resumed or forked from and where it will stop. `false` silences them. Nothing is sent anywhere. |
 | `run_id` | `RAVEX_RUN_ID` | `null` | Recorded in checkpoint metadata, and the run's id in `run.json` when the store is new; also used as the storage prefix when none is set. See [The run as a document](#the-run-as-a-document). |
 | `name` | `RAVEX_NAME` | `null` | What a person calls this run, written into `run.json`. Unlike `run_id` it may repeat between experiments. Defaults to the store directory's name. |
 | `audit_log` | `RAVEX_AUDIT_LOG` | `false` | Append one hash-chained entry per durable checkpoint to `audit.jsonl` in the store: step, content fingerprint, config digest. See [Audit trail](#audit-trail). |
@@ -592,6 +593,12 @@ right there, because that is the first point anything asks for it. At
 none of it caused by the checkpoint. Reading it as checkpoint overhead leads to
 the wrong conclusion; that mistake is what
 [GPU-54](https://linear.app/gpuzero/issue/GPU-54) cost.
+
+When the handoff, `drain` left out, takes a fifth of the wall time between two
+checkpoints, Ravex says so once, as a warning with both times
+(`45 ms of handoff per 120 ms step`). Not before step 50, where the first full
+and the writer starting up still dominate, and not for a handoff under 10 ms,
+which is a large share of nothing on a model that steps in a millisecond.
 
 On a sharded checkpoint with more than one rank, a `skew` phase can appear
 before it:
