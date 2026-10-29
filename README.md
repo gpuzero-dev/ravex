@@ -179,7 +179,12 @@ count and the resume work: [docs/how-it-works.md](docs/how-it-works.md).
   `torch.save` (DCP is read, to resume from a checkpoint another framework
   wrote: `convert_foreign`).
 - **W&B, MLflow** keep working as they are: Ravex does not touch their calls,
-  and its own `log_metrics` is optional.
+  and its own `log_metrics` is optional. Runs already logged there come over
+  as Ravex stores of their own, scalars only, with `ravex import wandb
+  entity/project/run_id --storage DIR` (it needs the `wandb` package) or
+  `ravex import table export.csv --storage DIR` for a CSV or JSONL export
+  (Neptune's, MLflow's, a row per step or a row per value); `ravex ship`
+  then sends one to a backend like any other run.
 
 ## Versioning and compatibility
 

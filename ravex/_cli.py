@@ -279,6 +279,34 @@ def _ship(args) -> int:
     return 0
 
 
+def _import(args) -> int:
+    """Write a run logged elsewhere as a store of its own (GPU-314)."""
+    from ravex import _import as importing
+
+    try:
+        if args.source == "wandb":
+            about, records = importing.from_wandb(args.what)
+            name = args.name or about["name"]
+            written = importing.write_store(
+                args.storage, records, name=name, config=about["config"],
+                created_at=about["created_at"], source=about["source"],
+            )
+        else:
+            name = args.name or os.path.splitext(os.path.basename(args.what))[0]
+            written = importing.write_store(
+                args.storage, importing.from_table(args.what), name=name, source="file:" + os.path.basename(args.what),
+            )
+    except (FileExistsError, ValueError, RuntimeError, OSError) as exc:
+        print(f"ravex import: {exc}", file=sys.stderr)
+        return 2
+    print(
+        f"{args.storage}: run {written['run']['run_id']} ({name}), {written['records']} steps up to "
+        f"{written['last_step']}, {len(written['metrics'])} metric(s)."
+    )
+    print(f"Send it to a backend with: ravex ship --storage {args.storage} --endpoint <metrics_endpoint>")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="ravex",
@@ -363,6 +391,18 @@ def main(argv=None) -> int:
         help="seconds to spend on a backlog that is going out (default: as at the end of a run)",
     )
     ship.set_defaults(handler=_ship)
+
+    imports = subparsers.add_parser(
+        "import",
+        help="write a run logged elsewhere as a store: from W&B, or a CSV/JSONL export (Neptune, MLflow)",
+    )
+    imports.add_argument("source", choices=("wandb", "table"))
+    imports.add_argument(
+        "what", help="wandb: entity/project/run_id; table: a .csv or .jsonl file of metrics"
+    )
+    imports.add_argument("--storage", required=True, help="a new directory for the run's store")
+    imports.add_argument("--name", default=None, help="the run's name (default: the source's)")
+    imports.set_defaults(handler=_import)
 
     args = parser.parse_args(argv)
     if not hasattr(args, "handler"):

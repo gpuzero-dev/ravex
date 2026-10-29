@@ -4,6 +4,15 @@
 
 ### Added
 
+- **`ravex import` (GPU-314)**: a run logged elsewhere becomes a store of its
+  own, which `ravex.metrics.read` draws and `ravex ship` sends like any other.
+  `ravex import wandb entity/project/run_id` reads a W&B run's full history
+  through the `wandb` package, which Ravex does not depend on, with its name,
+  configuration and start time; `ravex import table FILE` reads a CSV or JSONL
+  export, wide (a column per metric) or long (`metric` or `attribute_path` and
+  `value` per row, as Neptune's and MLflow's are). Scalars only; an imported
+  run is never resumable, and an import never writes into a store that
+  already holds a run.
 - The README says how Ravex sits next to Lightning, Accelerate, the Hugging
   Face Trainer, DCP and W&B, what the version numbers promise, and what GPU
   Zero adds (GPU-310). `CONTRIBUTING.md`, `SECURITY.md` and issue templates;
