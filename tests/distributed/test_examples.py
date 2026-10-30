@@ -36,7 +36,14 @@ def quickstart() -> str:
 
 
 def stop_at(command, cwd, needle, env=None):
-    """Run `command` until it prints a line holding `needle`, then Ctrl-C it."""
+    """Run `command` until it prints a line holding `needle`, then Ctrl-C it.
+
+    Unbuffered, as a terminal would show it: into a pipe Python buffers stdout
+    by the block, so the quickstart's ten short lines arrived only when it had
+    already finished, the Ctrl-C reached no one, and the run "resumed" at
+    step 2000 with nothing left to print.
+    """
+    env = dict(os.environ if env is None else env, PYTHONUNBUFFERED="1")
     process = subprocess.Popen(
         command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=env
     )
