@@ -106,7 +106,10 @@ dependencies = ["PyYAML>=5.1"]
 #            0.3.1 since GPU-267: Ravex no longer passes a bucket's keys, and
 #            Moonclip reads them from its environment only since 0.3.1; an
 #            older one refuses a bucket without them.
-moonclip = ["moonclip>=0.3.1"]
+#            0.3.2 since GPU-309: the README says a bucket needs no keys on a
+#            machine with a profile or a role, which Moonclip reads only since
+#            0.3.2; an older one refuses that bucket.
+moonclip = ["moonclip>=0.3.2"]
 dev = ["pytest>=7", "numpy"]
 
 [project.urls]

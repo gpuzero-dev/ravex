@@ -193,7 +193,7 @@ an option's default or remove what was deprecated, each said in the
 CHANGELOG; what is removed warns for at least one minor release first. A
 newer Ravex resumes runs an older one wrote. An older one does not resume a
 newer one's checkpoint: it says so and starts from scratch, so pin a minor
-version (`ravex~=0.10.1`) for a run that may restart on another machine.
+version (`ravex~=0.11.0`) for a run that may restart on another machine.
 Python 3.11 and later, each for as long as CPython supports it.
 
 ## Limits

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-10-30
 
 ### Added
 
@@ -29,6 +29,8 @@
 
 ### Changed
 
+- `ravex[moonclip]` asks for Moonclip 0.3.2 or later (GPU-309): a bucket
+  reached with a profile or the machine's role, and no keys, needs it.
 - **The cadence warning shows its times, and waits (GPU-308).** It printed
   `0.0s of handoff per 0.0s step` as "37% of wall time", at step 12 of a tiny
   model. Times under a second are now in milliseconds, and it is not given
