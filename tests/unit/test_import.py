@@ -164,11 +164,36 @@ def test_an_export_of_several_runs_asks_which(tmp_path):
         importing.from_neptune("export", run="SAN-9", rows=rows)
 
 
-def test_a_fractional_neptune_step_is_refused_not_folded():
+def test_fractional_neptune_steps_are_numbered_in_order_not_folded(capsys, tmp_path):
+    # As neptune-exporter's own tests log them: 0.0, 0.1, 0.2..., where
+    # rounding would fold every value into step 0.
+    rows = [row for row in neptune_rows() if row["attribute_type"] != "float_series"]
+    for k, (loss, acc) in enumerate([(2.5, None), (2.1, 0.3), (1.9, None), (1.7, 0.4)]):
+        step = Decimal(k) / 10
+        rows.append({"run_id": "SAN-7", "attribute_path": "train/loss", "attribute_type": "float_series",
+                     "step": step, "timestamp": NEPTUNE_START + timedelta(seconds=k), "float_value": loss})
+        if acc is not None:
+            rows.append({"run_id": "SAN-7", "attribute_path": "eval/acc", "attribute_type": "float_series",
+                         "step": step, "timestamp": NEPTUNE_START + timedelta(seconds=k), "float_value": acc})
+    about, records = importing.from_neptune("export", rows=rows)
+    assert about["renumbered"]
+    assert [(step, values) for step, _, values in records] == [
+        (0, {"train/loss": 2.5}),
+        (1, {"train/loss": 2.1, "eval/acc": 0.3}),
+        (2, {"train/loss": 1.9}),
+        (3, {"train/loss": 1.7, "eval/acc": 0.4}),
+    ]
+    # Whole steps keep their numbers: gaps stay gaps.
+    about, records = importing.from_neptune("export", rows=neptune_rows())
+    assert not about["renumbered"]
+
+
+def test_the_command_says_when_it_renumbered(tmp_path, capsys, monkeypatch):
     rows = neptune_rows()
     rows[-1]["step"] = Decimal("2.500000")
-    with pytest.raises(ValueError, match="fractional step"):
-        importing.from_neptune("export", rows=rows)
+    monkeypatch.setattr(importing, "_parquet_rows", lambda path: rows)
+    assert _cli.main(["import", "neptune", "export", "--storage", str(tmp_path / "run")]) == 0
+    assert "fractional steps" in capsys.readouterr().err
 
 
 def test_the_parquet_neptune_exporter_writes_is_read(tmp_path):

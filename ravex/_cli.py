@@ -290,6 +290,12 @@ def _import(args) -> int:
             else:
                 about, records = importing.from_neptune(args.what, run=args.run)
             name = args.name or about["name"]
+            if about.get("renumbered"):
+                print(
+                    f"ravex import: {about['source']} logs fractional steps; Ravex counts whole ones, so its "
+                    "distinct steps were numbered 0, 1, 2... in order, the same for every metric",
+                    file=sys.stderr,
+                )
             written = importing.write_store(
                 args.storage, records, name=name, config=about["config"],
                 created_at=about["created_at"], source=about["source"],

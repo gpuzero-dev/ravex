@@ -8,9 +8,11 @@
   `neptune-exporter`, the only export Neptune left when its hosted service
   closed, writes. A run's float series become its metrics, with their steps
   and times; its single values its configuration, and `sys/` its name and
-  start. `--run` picks one run where the export holds several; a fractional
-  step is refused rather than folded into another. It needs `pyarrow`, which
-  Ravex does not depend on.
+  start. `--run` picks one run where the export holds several. A run that logs
+  fractional steps (0.1, an epoch's 2.5), which Neptune allows and Ravex's
+  whole steps cannot hold, has its distinct steps numbered 0, 1, 2... in
+  order, the same for every metric, and the command says so. It needs
+  `pyarrow`, which Ravex does not depend on.
 
 ### Fixed
 

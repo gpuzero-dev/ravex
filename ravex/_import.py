@@ -24,6 +24,7 @@ import json
 import os
 import time
 from datetime import datetime
+from decimal import Decimal
 from typing import Any, Dict, Iterable, Iterator, List, Mapping, Optional, Tuple
 
 from ravex._metrics import HEADER_CHUNK, METRICS_DIR, _number, chunk_name, segment_id
@@ -260,7 +261,7 @@ def from_neptune(
     rows = [row for row in rows if str(row.get("run_id")) == chosen]
 
     config: Dict[str, Any] = {}
-    by_step: Dict[int, Tuple[float, Dict[str, Any]]] = {}
+    by_step: Dict[Decimal, Tuple[float, Dict[str, Any]]] = {}
     for row in rows:
         kind = row.get("attribute_type")
         attribute = str(row.get("attribute_path"))
@@ -268,16 +269,22 @@ def from_neptune(
             value = row.get(kind + "_value")
             config[attribute] = _seconds(value) if kind == "datetime" else value
         elif kind == "float_series" and row.get("step") is not None:
-            step = row["step"]
-            # Neptune allows a step like 0.5; a Ravex step is a count of
-            # optimizer steps. Folding two steps into one would keep one value
-            # and drop the other without a word, so such a run is refused.
-            if step != int(step):
-                raise ValueError("%s has a fractional step (%s) in %s; Ravex steps are whole" % (chosen, step, attribute))
+            step = Decimal(str(row["step"]))
             when = _seconds(row.get("timestamp"))
-            when = float(int(step)) if when is None else when
-            entry = by_step.setdefault(int(step), (when, {}))
+            when = float(step) if when is None else when
+            entry = by_step.setdefault(step, (when, {}))
             entry[1][attribute] = row.get("float_value")
+
+    # Neptune takes any step, 0.1 or an epoch's 2.5 - its own exporter's tests
+    # log 0.0, 0.1, 0.2... - and a Ravex step is a whole count. Rounding would
+    # fold 0.1 and 0.2 into one step and drop a value without a word; refusing
+    # left those runs with no way in. So a run with any fractional step is
+    # renumbered: its distinct steps in order become 0, 1, 2..., the same for
+    # every metric, so the curves keep their shape and stay aligned, and the
+    # times keep the real spacing. The caller says it happened (GPU-355).
+    steps = sorted(by_step)
+    renumbered = any(step != step.to_integral_value() for step in steps)
+    whole = {step: (index if renumbered else int(step)) for index, step in enumerate(steps)}
 
     created = config.get("sys/creation_time")
     about = {
@@ -285,12 +292,13 @@ def from_neptune(
         "config": {key: value for key, value in config.items() if not key.startswith("sys/")},
         "created_at": created if isinstance(created, float) else None,
         "source": "neptune:" + chosen,
+        "renumbered": renumbered,
     }
 
     def records() -> Iterator[Record]:
-        for step in sorted(by_step):
+        for step in steps:
             when, values = by_step[step]
-            yield step, when, values
+            yield whole[step], when, values
 
     return about, records()
 
