@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.11.1 — 2026-11-02
+
+### Added
+
+- **`ravex import neptune` (GPU-355)**: reads the Parquet files that
+  `neptune-exporter`, the only export Neptune left when its hosted service
+  closed, writes. A run's float series become its metrics, with their steps
+  and times; its single values its configuration, and `sys/` its name and
+  start. `--run` picks one run where the export holds several; a fractional
+  step is refused rather than folded into another. It needs `pyarrow`, which
+  Ravex does not depend on.
+
+### Fixed
+
+- 0.11.0 said a long CSV is how Neptune exports a run: it is not, Neptune's
+  export is Parquet, with the number in `float_value`. `ravex import table`
+  stays for any CSV or JSONL file of metrics.
+
 ## 0.11.0 — 2026-10-30
 
 ### Added
