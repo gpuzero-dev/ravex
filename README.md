@@ -181,10 +181,12 @@ count and the resume work: [docs/how-it-works.md](docs/how-it-works.md).
 - **W&B, MLflow** keep working as they are: Ravex does not touch their calls,
   and its own `log_metrics` is optional. Runs already logged there come over
   as Ravex stores of their own, scalars only, with `ravex import wandb
-  entity/project/run_id --storage DIR` (it needs the `wandb` package) or
-  `ravex import table export.csv --storage DIR` for a CSV or JSONL export
-  (Neptune's, MLflow's, a row per step or a row per value); `ravex ship`
-  then sends one to a backend like any other run.
+  entity/project/run_id --storage DIR` (it needs the `wandb` package),
+  `ravex import neptune ./exports/data --storage DIR` for the Parquet files
+  `neptune-exporter` writes (it needs `pyarrow`; `--run` picks one run where
+  they hold several), or `ravex import table metrics.csv --storage DIR` for
+  any CSV or JSONL file of metrics, a row per step or a row per value;
+  `ravex ship` then sends one to a backend like any other run.
 
 ## Versioning and compatibility
 

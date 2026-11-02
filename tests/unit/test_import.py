@@ -6,6 +6,8 @@ other: :func:`ravex.metrics.read` draws it, and ``ravex ship`` sends it.
 
 import json
 import os
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 import pytest
 
@@ -105,6 +107,92 @@ def test_a_table_without_a_step_is_refused(tmp_path):
     source.write_text("loss\n1\n")
     with pytest.raises(ValueError, match="no step column"):
         list(importing.from_table(str(source)))
+
+
+# Rows as pyarrow reads them from neptune-exporter's Parquet (GPU-355): the
+# step a decimal, the times aware datetimes, one value column per type.
+NEPTUNE_START = datetime(2026, 2, 1, 9, 0, tzinfo=timezone.utc)
+
+
+def neptune_rows(run_id="SAN-7"):
+    def parameter(path, kind, value):
+        return {"run_id": run_id, "attribute_path": path, "attribute_type": kind, kind + "_value": value, "step": None}
+
+    def point(path, step, value):
+        return {
+            "run_id": run_id, "attribute_path": path, "attribute_type": "float_series",
+            "step": Decimal(step).quantize(Decimal("1.000000")),
+            "timestamp": NEPTUNE_START + timedelta(seconds=step), "float_value": value,
+        }
+
+    return [
+        parameter("sys/name", "string", "shakespeare-small"),
+        parameter("sys/creation_time", "datetime", NEPTUNE_START),
+        parameter("parameters/lr", "float", 3e-4),
+        parameter("parameters/batch", "int", 64),
+        parameter("sys/tags", "string_set", ["baseline"]),
+        {"run_id": run_id, "attribute_path": "logs/stdout", "attribute_type": "string_series", "step": Decimal(0)},
+        point("train/loss", 0, 2.5), point("train/loss", 1, 2.1), point("train/loss", 2, 1.9),
+        point("eval/acc", 2, 0.4),
+    ]
+
+
+def test_a_neptune_export_becomes_a_store_with_its_name_parameters_and_series(tmp_path):
+    about, records = importing.from_neptune("export", rows=neptune_rows())
+    assert about["name"] == "shakespeare-small"
+    assert about["created_at"] == NEPTUNE_START.timestamp()
+    assert about["config"] == {"parameters/lr": 3e-4, "parameters/batch": 64}
+    assert about["source"] == "neptune:SAN-7"
+    records = list(records)
+    assert [step for step, _, _ in records] == [0, 1, 2]
+    assert records[2] == (2, NEPTUNE_START.timestamp() + 2, {"train/loss": 1.9, "eval/acc": 0.4})
+
+    store = str(tmp_path / "run")
+    written = importing.write_store(store, iter(records), name=about["name"], config=about["config"],
+                                    created_at=about["created_at"], source=about["source"])
+    assert written["metrics"] == ["eval/acc", "train/loss"]
+    assert ravex.metrics.read(store)["scalars"]["train/loss"]["step"] == [0, 1, 2]
+
+
+def test_an_export_of_several_runs_asks_which(tmp_path):
+    rows = neptune_rows("SAN-7") + neptune_rows("SAN-8")
+    with pytest.raises(ValueError, match="SAN-7, SAN-8"):
+        importing.from_neptune("export", rows=rows)
+    about, records = importing.from_neptune("export", run="SAN-8", rows=rows)
+    assert about["source"] == "neptune:SAN-8" and len(list(records)) == 3
+    with pytest.raises(ValueError, match="no run SAN-9"):
+        importing.from_neptune("export", run="SAN-9", rows=rows)
+
+
+def test_a_fractional_neptune_step_is_refused_not_folded():
+    rows = neptune_rows()
+    rows[-1]["step"] = Decimal("2.500000")
+    with pytest.raises(ValueError, match="fractional step"):
+        importing.from_neptune("export", rows=rows)
+
+
+def test_the_parquet_neptune_exporter_writes_is_read(tmp_path):
+    pa = pytest.importorskip("pyarrow")
+    parquet = pytest.importorskip("pyarrow.parquet")
+    # neptune_exporter.model.SCHEMA, as the exporter writes it.
+    schema = pa.schema([
+        ("project_id", pa.string()), ("run_id", pa.string()), ("attribute_path", pa.string()),
+        ("attribute_type", pa.string()), ("step", pa.decimal128(18, 6)),
+        ("timestamp", pa.timestamp("ms", tz="UTC")), ("int_value", pa.int64()), ("float_value", pa.float64()),
+        ("string_value", pa.string()), ("bool_value", pa.bool_()),
+        ("datetime_value", pa.timestamp("ms", tz="UTC")), ("string_set_value", pa.list_(pa.string())),
+    ])
+    rows = [{field.name: row.get(field.name) for field in schema} for row in neptune_rows()]
+    for row in rows:
+        row["project_id"] = "workspace/project"
+    directory = tmp_path / "data" / "workspace_project"
+    directory.mkdir(parents=True)
+    parquet.write_table(pa.Table.from_pylist(rows, schema=schema), directory / "SAN-7_part_0.parquet")
+
+    store = str(tmp_path / "run")
+    assert _cli.main(["import", "neptune", str(tmp_path / "data"), "--storage", store]) == 0
+    assert json.load(open(os.path.join(store, "run.json")))["name"] == "shakespeare-small"
+    assert ravex.metrics.read(store)["scalars"]["train/loss"]["step"] == [0, 1, 2]
 
 
 def test_the_command_writes_the_store_and_ravex_ship_sends_it(tmp_path, capsys):

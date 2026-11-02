@@ -1,7 +1,7 @@
 """Runs logged somewhere else, written as Ravex stores (GPU-314).
 
-Somebody whose history is in W&B, or in a file exported from Neptune or
-MLflow, should not have to rewrite their training loop before they can see
+Somebody whose history is in W&B, in Neptune's export (the Parquet files of
+``neptune-exporter``, GPU-355), or in a CSV or JSONL file of metrics, should not have to rewrite their training loop before they can see
 an old run beside a new one. ``ravex import`` writes such a run as a store
 like any other - ``run.json``, ``status.json`` and one metrics segment - so
 everything that reads a store reads it: :func:`ravex.metrics.read`, and
@@ -13,7 +13,8 @@ and checkpoints are not metrics: a run imported can be looked at and
 compared, not resumed.
 
 Nothing here talks to a network but the W&B reader, and that only through
-the ``wandb`` package the person already has; Ravex does not depend on it.
+the ``wandb`` package the person already has; Ravex does not depend on it,
+nor on ``pyarrow``, which only the Neptune reader needs.
 """
 
 from __future__ import annotations
@@ -178,7 +179,123 @@ def from_wandb(path: str, api: Any = None) -> Tuple[Dict[str, Any], Iterator[Rec
     return about, records()
 
 
-# ─── a table: Neptune's or MLflow's export, or anything else ────────
+# ─── Neptune: what neptune-exporter writes ─────────────────────────
+
+
+#: Neptune's own attribute types that are one value, not a series: they are
+#: the run's parameters, and come across as its configuration.
+NEPTUNE_PARAMETERS = ("float", "int", "string", "bool", "datetime", "string_set")
+
+
+def _parquet_files(path: str) -> List[str]:
+    if os.path.isfile(path):
+        return [path]
+    found = []
+    for root, _dirs, files in os.walk(path):
+        found.extend(os.path.join(root, name) for name in files if name.endswith(".parquet"))
+    if not found:
+        raise ValueError("%s holds no .parquet file" % path)
+    return sorted(found)
+
+
+def _parquet_rows(path: str) -> List[Dict[str, Any]]:
+    """Every row of the ``.parquet`` files at ``path``, as dicts."""
+    try:
+        import pyarrow as arrow  # type: ignore[import-not-found]
+        import pyarrow.parquet as parquet  # type: ignore[import-not-found]
+    except ImportError:
+        raise RuntimeError("importing from Neptune needs the pyarrow package: pip install pyarrow") from None
+    rows: List[Dict[str, Any]] = []
+    for name in _parquet_files(path):
+        table = parquet.read_table(name)
+        if "attribute_type" not in table.column_names or "float_value" not in table.column_names:
+            raise ValueError("%s is not an export of neptune-exporter (no attribute_type or float_value)" % name)
+        # The exporter's times are UTC timestamps, and turning one into a
+        # Python datetime needs a time-zone database that Windows does not
+        # have without the tzdata package: the first import of a real export
+        # failed there. As seconds since the epoch they need none.
+        for index, field in enumerate(table.schema):
+            if arrow.types.is_timestamp(field.type):
+                per_second = {"s": 1, "ms": 1e3, "us": 1e6, "ns": 1e9}[field.type.unit]
+                seconds = [None if raw is None else raw / per_second for raw in table.column(index).cast(arrow.int64()).to_pylist()]
+                table = table.set_column(index, field.name, arrow.array(seconds, type=arrow.float64()))
+        rows.extend(table.to_pylist())
+    return rows
+
+
+def _seconds(value: Any) -> Optional[float]:
+    if isinstance(value, datetime):
+        return value.timestamp()
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def from_neptune(
+    path: str, run: Optional[str] = None, rows: Optional[List[Dict[str, Any]]] = None
+) -> Tuple[Dict[str, Any], Iterator[Record]]:
+    """A run exported by ``neptune-exporter``, the only export Neptune left
+    when its hosted service closed (GPU-355), as (what describes it, its
+    records). ``path`` is one of its ``.parquet`` files or a directory of
+    them; ``run`` picks one run where they hold several.
+
+    The exporter writes Parquet and nothing else: a row per value, the type
+    in ``attribute_type``, the number of a series in ``float_value``, the
+    step as a decimal and the time in milliseconds. Its ``float_series`` are
+    the metrics; its single values are the parameters, and ``sys/`` gives
+    the name and the creation time. Reading Parquet needs ``pyarrow``, which
+    the person installs as they install ``wandb`` for W&B: Ravex does not
+    depend on it. ``rows`` stands in for the files' rows, as ``api`` does
+    for W&B, so the reading can be tested without pyarrow.
+    """
+    if rows is None:
+        rows = _parquet_rows(path)
+
+    runs = sorted({str(row.get("run_id")) for row in rows})
+    if run is None and len(runs) > 1:
+        raise ValueError("%s holds %d runs; pick one with --run: %s" % (path, len(runs), ", ".join(runs)))
+    chosen = run if run is not None else (runs[0] if runs else None)
+    if chosen not in runs:
+        raise ValueError("%s holds no run %s" % (path, chosen))
+    rows = [row for row in rows if str(row.get("run_id")) == chosen]
+
+    config: Dict[str, Any] = {}
+    by_step: Dict[int, Tuple[float, Dict[str, Any]]] = {}
+    for row in rows:
+        kind = row.get("attribute_type")
+        attribute = str(row.get("attribute_path"))
+        if kind in NEPTUNE_PARAMETERS:
+            value = row.get(kind + "_value")
+            config[attribute] = _seconds(value) if kind == "datetime" else value
+        elif kind == "float_series" and row.get("step") is not None:
+            step = row["step"]
+            # Neptune allows a step like 0.5; a Ravex step is a count of
+            # optimizer steps. Folding two steps into one would keep one value
+            # and drop the other without a word, so such a run is refused.
+            if step != int(step):
+                raise ValueError("%s has a fractional step (%s) in %s; Ravex steps are whole" % (chosen, step, attribute))
+            when = _seconds(row.get("timestamp"))
+            when = float(int(step)) if when is None else when
+            entry = by_step.setdefault(int(step), (when, {}))
+            entry[1][attribute] = row.get("float_value")
+
+    created = config.get("sys/creation_time")
+    about = {
+        "name": config.get("sys/name") or config.get("sys/custom_run_id") or chosen,
+        "config": {key: value for key, value in config.items() if not key.startswith("sys/")},
+        "created_at": created if isinstance(created, float) else None,
+        "source": "neptune:" + chosen,
+    }
+
+    def records() -> Iterator[Record]:
+        for step in sorted(by_step):
+            when, values = by_step[step]
+            yield step, when, values
+
+    return about, records()
+
+
+# ─── a table: MLflow's metric history, or anything else ─────────────
 
 #: Column names taken for the step and the time, in a wide table or a long one.
 STEP_COLUMNS = ("step", "_step", "iteration", "epoch")

@@ -91,7 +91,10 @@ jobs:
           # puts PyPI back alongside it. The CPU build still wins: `+cpu` is a
           # PEP 440 local version and sorts above the plain one on PyPI.
           pip install --quiet --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple torch
-          pip install --quiet -e . pytest
+          # pyarrow only for the Neptune import's test, which reads a real
+          # Parquet file and is skipped without it (GPU-355); Ravex does not
+          # depend on it.
+          pip install --quiet -e . pytest pyarrow
           pytest tests/unit -v
 
   # The free-threaded build of 3.14, which release.yml ships a cp314t wheel for

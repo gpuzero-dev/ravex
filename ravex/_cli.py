@@ -284,8 +284,11 @@ def _import(args) -> int:
     from ravex import _import as importing
 
     try:
-        if args.source == "wandb":
-            about, records = importing.from_wandb(args.what)
+        if args.source in ("wandb", "neptune"):
+            if args.source == "wandb":
+                about, records = importing.from_wandb(args.what)
+            else:
+                about, records = importing.from_neptune(args.what, run=args.run)
             name = args.name or about["name"]
             written = importing.write_store(
                 args.storage, records, name=name, config=about["config"],
@@ -394,12 +397,15 @@ def main(argv=None) -> int:
 
     imports = subparsers.add_parser(
         "import",
-        help="write a run logged elsewhere as a store: from W&B, or a CSV/JSONL export (Neptune, MLflow)",
+        help="write a run logged elsewhere as a store: from W&B, a neptune-exporter export, or a CSV/JSONL file",
     )
-    imports.add_argument("source", choices=("wandb", "table"))
+    imports.add_argument("source", choices=("wandb", "neptune", "table"))
     imports.add_argument(
-        "what", help="wandb: entity/project/run_id; table: a .csv or .jsonl file of metrics"
+        "what",
+        help="wandb: entity/project/run_id; neptune: a .parquet file or directory from neptune-exporter; "
+        "table: a .csv or .jsonl file of metrics",
     )
+    imports.add_argument("--run", default=None, help="neptune: the run to import, where the export holds several")
     imports.add_argument("--storage", required=True, help="a new directory for the run's store")
     imports.add_argument("--name", default=None, help="the run's name (default: the source's)")
     imports.set_defaults(handler=_import)
