@@ -343,3 +343,58 @@ jobs:
 
       - name: Framework integration suite
         run: pytest integration/test_frameworks.py -v --tb=short
+
+  # A new user's first minutes, on each interpreter they may have (GPU-367):
+  # an empty slim image, Ravex installed as the wheel this commit would
+  # release (not the checkout, which `-e` would put first on the path) with
+  # Moonclip from PyPI as `ravex[moonclip]` pulls it, and the README's
+  # quickstart and the examples stopped and run again. On 2026-10-29 none of
+  # it ran: the examples used an API that was gone, and on 3.10 pip quietly
+  # installed ravex 0.0.4. The suites above import the checkout and never
+  # caught either.
+  first-run:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12", "3.13"]
+    container:
+      image: python:${{ matrix.python }}-slim-bookworm
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Install the wheel, as a user would
+        run: |
+          set -eu
+          pip install --quiet --index-url https://download.pytorch.org/whl/cpu --extra-index-url https://pypi.org/simple torch
+          pip install --quiet build pytest
+          python -m build --wheel --outdir /tmp/dist .
+          wheel=$(ls /tmp/dist/ravex-*.whl)
+          pip install --quiet "${wheel}[moonclip]"
+          # From another directory: in the checkout, `ravex/` would be the
+          # source and not what was installed.
+          cd /tmp && python -c "import moonclip, ravex; print('ravex', ravex.__version__, 'from', ravex.__file__)"
+
+      - name: The quickstart and the examples, stopped and run again
+        # The `pytest` script and not `python -m pytest`, which would put the
+        # checkout's `ravex/` ahead of the installed wheel.
+        run: OMP_NUM_THREADS=1 pytest tests/distributed/test_examples.py -v
+
+  # Python 3.10 cannot run Ravex, and pip has to say so rather than install an
+  # old release that has none of the README: every release that claimed 3.9 is
+  # yanked, and this holds PyPI to it (GPU-296, GPU-367).
+  first-run-310:
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.10-slim-bookworm
+    steps:
+      - name: pip refuses on 3.10
+        run: |
+          if pip install --quiet "ravex[moonclip]" 2> err.txt; then
+            pip show ravex moonclip
+            echo "pip installed Ravex on Python 3.10; a release that allows it is not yanked" >&2
+            exit 1
+          fi
+          cat err.txt
+          grep -q "No matching distribution found for ravex" err.txt
