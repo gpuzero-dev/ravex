@@ -736,6 +736,10 @@ class RavexRuntime:
         # The next forward of a watched model is the top of the next
         # iteration; see `watch_iterations` (GPU-276).
         self._iteration_armed = True
+        if self.config.track_rng and not self.registry.dataloaders:
+            # The checkpoint of this step is taken at that forward, after the
+            # next batch is drawn: it takes the RNG from here (GPU-367).
+            self.registry.keep_rng_at_step()
         if self._metrics is not None:
             self._log_step_metrics(optimizer)
             self._log_training_metrics(optimizer)
