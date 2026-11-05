@@ -83,8 +83,12 @@ ravex: resumed from step 1400 in ./checkpoints; it stops at step 2000 (max_steps
 and it is what makes a resumed run end where the uninterrupted one would have:
 without it, the resumed script runs its own `for epoch in range(100)` from the
 top again, from the step it came back at, and trains more than the run that
-never stopped. For a longer example, see
-[`examples/train_mlp.py`](examples/train_mlp.py).
+never stopped. For longer examples, each of which the test suite stops and
+resumes: [`examples/train_mlp.py`](examples/train_mlp.py), a DataLoader loop;
+[`examples/train_gpt.py`](examples/train_gpt.py), a small GPT with nanoGPT's
+loop, batches drawn with `torch.randint` and no DataLoader; and
+[`examples/train_ddp.py`](examples/train_ddp.py), two processes with DDP on a
+CPU under `torchrun`.
 
 A resumed run continues rather than restarting from a good place, because
 Ravex restores everything around the weights too: optimizer state, LR
