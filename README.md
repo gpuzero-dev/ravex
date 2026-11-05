@@ -62,6 +62,13 @@ python train.py      # press Ctrl-C after a few lines
 python train.py      # the first line is past where you stopped, not step 200
 ```
 
+Ctrl-C ends in Python's traceback for `KeyboardInterrupt`, as in any script;
+the line just above it says the run was not lost:
+
+```text
+ravex: stopped; step 600 is saved in ./checkpoints, and the same command resumes from it
+```
+
 The checkpoints are in `./checkpoints`; delete it to start over. Ravex says
 two things on stderr, whatever the log level: where the first checkpoint went,
 and, on a restart, the step it came back at:

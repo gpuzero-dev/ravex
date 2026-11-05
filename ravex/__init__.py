@@ -148,6 +148,7 @@ def train_loop(
 
             _activate(**overrides)
             preempted = False
+            stopped = None
             try:
                 return function(*args, **kwargs)
             except Preempted:
@@ -179,9 +180,15 @@ def train_loop(
                 runtime = get_runtime(create=False)
                 if runtime is not None:
                     runtime.exit_state = _exit_state(exc)
+                    if isinstance(exc, KeyboardInterrupt):
+                        stopped = runtime
                 raise
             finally:
                 deactivate()
+                if stopped is not None:
+                    # After the teardown, which wrote the final checkpoint;
+                    # the interrupt still propagates (GPU-367).
+                    stopped.announce_stopped()
                 if preempted:
                     _die_of_sigterm()
 

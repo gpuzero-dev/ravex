@@ -3685,6 +3685,22 @@ class RavexRuntime:
             )
         self._announce("%s in %s; %s" % (what, self.config.storage.path, until))
 
+    def announce_stopped(self) -> None:
+        """Say where a run stopped with Ctrl-C can be taken up again.
+
+        Called after the teardown, so the final checkpoint is written. The
+        ``KeyboardInterrupt`` goes on to print its traceback, which a new user
+        reads as a crash; this line, just above it, says it was not and what
+        to do next (GPU-367)."""
+        step = self._last_saved_step
+        if step is None:
+            self._announce("stopped before the first checkpoint; the same command starts over")
+            return
+        self._announce(
+            "stopped; step %d is saved in %s, and the same command resumes from it"
+            % (step, self.config.storage.path)
+        )
+
     #: Fraction of wall time going into checkpoint handoff above which the
     #: cadence is worth mentioning. A fifth is the point where a reader would
     #: rather have been told: below it the cost reads as overhead, above it as
