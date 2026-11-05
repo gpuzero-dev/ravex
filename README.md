@@ -17,11 +17,14 @@ Ravex is pure Python and needs Python 3.11 or later. It does not depend on
 torch, so that it attaches to whatever build you already have (CUDA, ROCm, CPU)
 instead of pulling another one in.
 
-On Python 3.10 or older, `pip` may not refuse: the first releases, up to 0.0.4,
-said they ran on 3.9, and pip installs one of those instead, which has none of
-what this page describes and fails at `ravex.train_loop`. Check
-`python --version` first; `pip install "ravex>=0.10"` turns that quiet
-downgrade into an error that names the Python version.
+On Python 3.10 or older `pip install ravex` stops with "No matching
+distribution found for ravex": every release that said it ran there is yanked.
+Check `python --version`.
+
+torch's CPU wheels do not bring NumPy, and torch says so on import with a
+`UserWarning: Failed to initialize NumPy`. It is torch's and harmless, and
+`pip install numpy` silences it; with NumPy installed Ravex also restores its
+RNG on a resume.
 
 Its default checkpoint engine is [Moonclip](https://github.com/gpuzero-dev/moonclip),
 installed with `pip install "ravex[moonclip]"`. Moonclip publishes wheels for
