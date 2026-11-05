@@ -1,5 +1,42 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Ctrl-C says the run was kept (GPU-367).** After the final checkpoint, one
+  line on stderr just above Python's `KeyboardInterrupt` traceback:
+  `ravex: stopped; step 600 is saved in ./checkpoints, and the same command
+  resumes from it`. A new user read the traceback alone as a crash.
+- `examples/train_gpt.py`, a small GPT with nanoGPT's loop (batches drawn with
+  `torch.randint`, no DataLoader, warm-up and cosine LR), and
+  `examples/train_ddp.py`, two gloo processes with DDP under `torchrun`. Both
+  are stopped and resumed by `tests/distributed/test_examples.py`, which a new
+  CI job also runs against the built wheel, installed with Moonclip from PyPI
+  in an empty image on 3.11, 3.12 and 3.13 (GPU-367).
+
+### Fixed
+
+- **A loop without a DataLoader resumed on different batches (GPU-367).** Its
+  checkpoint is taken at the first forward after the step, and by then a loop
+  that draws its batch at the top of the iteration - `torch.randint` over a
+  token stream, as nanoGPT does - has drawn the next one: the RNG saved was one
+  draw ahead, and a run resumed from it trained on the batch after the right
+  one at every step. The losses of `examples/train_gpt.py` killed at step 200
+  and resumed were 0.4441 at step 300 against 0.4003 for the run never
+  stopped. The RNG is now kept as each counted step leaves it and saved with
+  that step's checkpoints, the final one included; the same run resumes on the
+  same losses. Loops with a DataLoader are unchanged.
+- **The cadence warning fired on one slow handoff, and on a resume's warm-up
+  (GPU-367).** It judged a single interval, so the README's quickstart with
+  Moonclip, whose handoff averages 4 ms, warned of "79% of wall time" on one
+  of 12 ms; and its 50 steps of grace counted from step 0, so a run resumed at
+  step 600 warned at step 602, on the writer starting. It now takes the
+  average of the last 20 handoffs, and the grace from this process's first.
+- The README no longer says pip installs ravex 0.0.4 on Python 3.10: those
+  releases are yanked, and pip refuses. It says what torch's NumPy warning on
+  a CPU install is.
+
 ## 0.11.1 — 2026-11-02
 
 ### Added
