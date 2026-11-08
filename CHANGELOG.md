@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **A SIGTERM handler that is already there is a warning (GPU-366)**, not a
+  debug line: Ravex does not take it over, so a stop does not save a
+  checkpoint first, and nothing else said so. `handle_sigterm: false`
+  silences it.
+
 ## 0.11.2 — 2026-11-08
 
 ### Fixed

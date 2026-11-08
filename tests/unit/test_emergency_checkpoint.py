@@ -13,6 +13,7 @@ flag, the isolated timeout actually firing when a peer disappears mid-round —
 is exercised for completeness, at lower stakes.
 """
 
+import logging
 import os
 import signal
 
@@ -432,6 +433,33 @@ def test_the_signal_handler_only_raises_a_flag(monkeypatch):
     captured[signal.SIGTERM](signal.SIGTERM, None)
 
     assert runtime._emergency_requested is True
+
+
+@pytest.mark.skipif(
+    os.name == "nt", reason="Ravex does not install a SIGTERM handler on Windows"
+)
+def test_a_handler_already_there_is_said_as_a_warning(monkeypatch, caplog):
+    """GPU-366: with somebody else's handler on SIGTERM, Ravex does not take
+    it over, and a stop then saves nothing. That was a debug line nobody
+    saw; it is a warning now, and Ravex still leaves the handler alone."""
+    installed = []
+    monkeypatch.setattr(signal, "signal", lambda sig, fn: installed.append(sig))
+    monkeypatch.setattr(signal, "getsignal", lambda sig: print)
+
+    config = RavexConfig()
+    config.handle_sigterm = True
+    runtime = RavexRuntime(config)
+    # Ravex keeps its logger off the root one, which caplog listens on.
+    monkeypatch.setattr(logging.getLogger("ravex"), "propagate", True)
+
+    with caplog.at_level("WARNING", logger="ravex"):
+        runtime._install_signal_handler()
+
+    assert installed == []
+    assert any(
+        record.levelname == "WARNING" and "will not save a checkpoint" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 # ─── the metadata flag ──────────────────────────────────────────────────

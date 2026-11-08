@@ -3806,8 +3806,18 @@ class RavexRuntime:
         if threading.current_thread() is not threading.main_thread():
             return
         try:
-            if signal.getsignal(signal.SIGTERM) is not signal.SIG_DFL:
-                logger.debug("SIGTERM already handled elsewhere; not installing")
+            existing = signal.getsignal(signal.SIGTERM)
+            if existing is not signal.SIG_DFL:
+                # A warning, not a debug line (GPU-366): the run then does not
+                # save on a stop, which is what a launcher's SIGTERM is for,
+                # and nothing else would say so.
+                logger.warning(
+                    "SIGTERM already has a handler (%r), so Ravex does not "
+                    "install its own: a stop will not save a checkpoint first. "
+                    "Leave SIGTERM to Ravex, or set handle_sigterm: false to "
+                    "silence this.",
+                    existing,
+                )
                 return
 
             def handler(signum, frame):
