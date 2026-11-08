@@ -1320,6 +1320,14 @@ of a region would train two models. Start the run again on other machines. A
 peer in another region that does not answer is only warned about: its round
 closes over whoever answered.
 
+A node that cannot reach the rendezvous at all is the same fault, found
+earlier (GPU-242): while it waits for the rendezvous to be up - up to
+`outer_deadline`, since node 0 may boot minutes later - a dial that is refused,
+or a name that does not resolve yet, is a server or a machine not up yet, and
+is waited for; two minutes in which every dial goes unanswered, the packets
+lost, is a network that does not carry the pair, and the node stops with
+`RegionUnreachable` rather than after the whole `outer_deadline`.
+
 **When it pays, measured - and when it does not.** The round over regions
 cuts what crosses regions and pays for it in time: its three steps run one
 after the other, where the flat round fetches from every peer at once. On

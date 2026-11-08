@@ -2006,6 +2006,11 @@ class RavexRuntime:
         addresses = _rendezvous.candidates(address)
         patience = float(self.config.outer_deadline)
         if len(addresses) == 1:
+            # Reached first, on its own: a rendezvous behind a network that
+            # drops this node's packets is said in two minutes as the run's
+            # machines being apart, not after `outer_deadline` as a generic
+            # error, two GPUs paid for nothing meanwhile (GPU-242).
+            _rendezvous.reach(addresses[0], time.monotonic() + patience)
             store = _rendezvous.connect(addresses[0], job, timeout=patience)
             self._rendezvous_at = address = addresses[0]
         else:

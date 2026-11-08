@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A node that cannot reach the rendezvous says so in two minutes (GPU-242)**,
+  as `RegionUnreachable`, instead of node 0 waiting the whole `outer_deadline`
+  (15 minutes) and the run failing with a generic error. Dials that are
+  refused, or a name that does not resolve yet, are still waited for: node 0
+  may boot later. Only silence - every dial unanswered for two minutes - is
+  taken for a network that does not carry the pair. On 2026-10-18 two RTX
+  4090 pods of one region never met, twice, two GPUs paid for nothing.
+
 ## 0.11.1 — 2026-11-02
 
 ### Added

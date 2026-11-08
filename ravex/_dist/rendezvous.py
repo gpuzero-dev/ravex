@@ -108,6 +108,16 @@ GATE_PATIENCE = 10.0
 #: How often a node dials again a server that is not up yet.
 DIAL_RETRY = 0.5
 
+#: How long a rendezvous may say nothing at all before a node gives up on
+#: reaching it (GPU-242). Not the time a node waits for the server to be up -
+#: that is ``outer_deadline``, since node 0 may boot minutes later - but how
+#: long every dial may go unanswered: no refusal, no reset, the packets lost.
+#: A host that is up and not listening yet refuses at once, and a name that
+#: does not resolve yet is a machine not made yet; silence is a network that
+#: does not carry this pair. On 2026-10-18 two RTX 4090 pods of one region
+#: on RunPod never met, twice, and the run paid two GPUs for 15 minutes.
+SILENCE_PATIENCE = 120.0
+
 #: The forwarders of this process's gated clients. A ``PrefixStore`` takes no
 #: attributes, so nothing else could keep them alive as long as their store.
 _FORWARDERS: List["_Forwarder"] = []
@@ -409,6 +419,47 @@ def connect(address: str, job: str, timeout: float = 300.0, token: Optional[str]
         _FORWARDERS.append(forwarder)
         host, port = "127.0.0.1", forwarder.port
     return PrefixStore(JOB_PREFIX % job, _tcp_store(host, port, False, timeout))
+
+
+def reach(address: str, deadline: float, silence: float = SILENCE_PATIENCE,
+          dial: Optional[float] = None) -> None:
+    """Wait until something answers at ``address``, or ``deadline``.
+
+    Raises :class:`ravex._dist.exchange.RegionUnreachable` when every dial
+    for ``silence`` seconds went unanswered (GPU-242): the run cannot meet on
+    these machines, and a launcher sends it back to the queue for others,
+    as it does a region whose nodes cannot reach each other (GPU-233). A
+    refused dial, or a name that does not resolve, is a server or a machine
+    not up yet, and it is waited for, up to ``deadline``; past it this
+    returns, and the connect that follows fails as it always has.
+    """
+    dial = PROBE_TIMEOUT if dial is None else dial
+    host, port = parse_address(address)
+    quiet_since: Optional[float] = None
+    while True:
+        now = time.monotonic()
+        if now >= deadline:
+            return
+        try:
+            sock = socket.create_connection((host, port), timeout=max(0.1, min(dial, deadline - now)))
+        except socket.timeout:
+            quiet_since = now if quiet_since is None else quiet_since
+            if time.monotonic() - quiet_since >= silence:
+                from ravex._dist.exchange import RegionUnreachable
+
+                raise RegionUnreachable("", -1, {}, said=(
+                    "the rendezvous at %s did not answer for %ds: no refusal, no reset, "
+                    "nothing, so the network between this node and node 0 does not carry "
+                    "it. Start the run again on other machines." % (address, silence)
+                )) from None
+        except OSError:
+            # Refused, or a name that does not resolve yet: there is a
+            # network, and the server or its machine is not up yet.
+            quiet_since = None
+        else:
+            _close(sock)
+            return
+        time.sleep(DIAL_RETRY)
 
 
 def register(store) -> int:

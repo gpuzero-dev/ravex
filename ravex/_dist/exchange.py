@@ -702,10 +702,16 @@ class RegionUnreachable(RuntimeError):
     over whoever answered, as it always has.
     """
 
-    def __init__(self, region: str, rank: int, peers: Dict[int, str]) -> None:
+    def __init__(self, region: str, rank: int, peers: Dict[int, str], said: Optional[str] = None) -> None:
         self.region = region
         self.rank = rank
         self.peers = dict(peers)
+        if said is not None:
+            # A node that never reached the rendezvous (GPU-242) has no rank
+            # yet and no peers of its own region to name: what it could not
+            # reach is said by whoever found it, under the same name.
+            super().__init__(said)
+            return
         super().__init__(
             "node %d cannot connect to %s of its own region %r (%s): the "
             "network between them does not carry it, and a region that cannot "
