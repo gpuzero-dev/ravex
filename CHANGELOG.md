@@ -24,6 +24,14 @@
 
 ### Fixed
 
+- **A node rejoining over slow rounds got back in (GPU-234).** A join waits
+  for the run's round to move, announces two rounds later, and takes the
+  state written at the end of that round: about three rounds, whatever
+  `outer_deadline` was, so with rounds over five minutes against the default
+  fifteen no node ever rejoined. The members now write the length of their
+  last round beside it, and the join's deadline covers the rounds still to
+  come plus one: never earlier than `outer_deadline`, never later than it
+  plus the rounds one join takes.
 - **A starting node's number is its place, not its arrival (GPU-237).** At a
   resume the node that restored its store first reached the rendezvous first
   and became node 0, so "node 0" in the log, the seed source and the round

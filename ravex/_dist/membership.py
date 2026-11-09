@@ -62,7 +62,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
 logger = logging.getLogger("ravex")
 
@@ -86,6 +86,11 @@ BEAT_KEY = "ravex/gpu263/beat/%d"
 #: writes the same number at the same boundary — rounds are in lockstep — so
 #: they overwrite each other with what they already agree on.
 STATE_AT_KEY = "ravex/gpu121/state-at"
+
+#: How long the members' last round took, in seconds, written beside
+#: STATE_AT_KEY: a joiner needs the run's pace before it has seen two rounds
+#: go by, since by then a slow run has passed its deadline (GPU-234).
+PACE_KEY = "ravex/gpu234/round-seconds"
 
 #: One member's acknowledgement that it has accepted one joiner, and at which
 #: round. **This is what makes the protocol safe rather than merely likely.**
@@ -240,6 +245,19 @@ class Membership:
         #: Candidates this node is writing state down for right now, so that
         #: opening and closing the window are each logged once.
         self._serving: set = set()
+
+        #: The last boundary this node passed, (round, when), by its clock:
+        #: what the run's pace is measured from (GPU-234).
+        self._boundary: Optional[Tuple[int, float]] = None
+
+    def pace(self, round_number: int) -> Optional[float]:
+        """Seconds a round took, measured from this boundary and the last
+        one; None at the first, or when the round did not move forward."""
+        now = self.clock()
+        before, self._boundary = self._boundary, (round_number, now)
+        if before is None or round_number <= before[0]:
+            return None
+        return (now - before[1]) / (round_number - before[0])
 
     def span(self) -> int:
         """How many ranks past the base to look at for join keys.
@@ -552,13 +570,29 @@ def serve_joins(store, exchange, loop, membership: "Membership") -> None:
     """
     round_number = int(loop.round_number)
     membership.refresh(round_number)
+    seconds = membership.pace(round_number)
 
     if membership.wants_state(round_number):
         exchange.publish_state(state_payload(loop), round_number)
         try:
+            if seconds is not None:
+                # Before the round: a joiner that reads the round reads the
+                # pace it came at (GPU-234).
+                store.set(PACE_KEY, json.dumps(seconds).encode("utf-8"))
             store.set(STATE_AT_KEY, json.dumps(round_number).encode("utf-8"))
         except Exception:
             pass
+
+
+def run_pace(store) -> Optional[float]:
+    """Seconds the members' last round took, as they wrote it, or None."""
+    try:
+        if not store.check([PACE_KEY]):
+            return None
+        seconds = float(json.loads(store.get(PACE_KEY).decode("utf-8")))
+        return seconds if seconds > 0 else None
+    except Exception:
+        return None
 
 
 def state_round(store) -> Optional[int]:
@@ -605,6 +639,19 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
     Throughout, the candidate beats (:func:`beat`) at least every
     :data:`JOIN_BEAT` seconds, which is what keeps the members writing the
     outer parameters down for as long as it is still trying (GPU-263).
+
+    ``deadline`` is how long the candidate waits for a run that does not
+    move. A run that does is given the rounds it takes: a join waits for the
+    state to move, then for ``JOIN_MARGIN`` more rounds, and the state of the
+    round it enters is written only once that round's training is over, so it
+    lasts about three rounds whatever the deadline. With rounds longer than a
+    third of it - five minutes against the default fifteen - no node ever got
+    back in (GPU-234). So, once the run's pace is known - written by the
+    members beside their round, then measured here from its moves - the
+    deadline is moved to cover the rounds still to come, plus one:
+    never earlier than the one given, never later than it plus the
+    ``JOIN_MARGIN + 2`` rounds one join takes, and a run that stops moving
+    runs it out from its last move.
     """
     members = [peer for peer in range(base_world) if peer != rank]
     # What the members wrote for the last node that joined, if one did. They
@@ -620,6 +667,12 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
     want_in(store, rank)
     announced_at: Optional[int] = None
     looked_for_members = 0.0
+    # The run's pace, as this candidate sees it: when its round last moved,
+    # to which round, and how long a round took (GPU-234).
+    moved_at: Optional[float] = None
+    moved_to: Optional[int] = None
+    round_seconds: Optional[float] = None
+    given = deadline
 
     while time.monotonic() < deadline:
         now = time.monotonic()
@@ -657,6 +710,25 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
         if observed is None or observed == stale:
             time.sleep(poll)
             continue
+
+        if observed != moved_to:
+            now = time.monotonic()
+            if moved_to is not None and moved_at is not None and observed > moved_to:
+                round_seconds = (now - moved_at) / (observed - moved_to)
+            else:
+                # The members' own measure, until this node has one.
+                round_seconds = run_pace(store) or round_seconds
+            moved_at, moved_to = now, observed
+        if round_seconds is not None and moved_at is not None and announced_at is not None:
+            # The rounds until the announced one is over, from the last move,
+            # and one more for the members' reports and the fetch.
+            # Never past the deadline given plus as many rounds as one join
+            # takes: a run that keeps moving while this node keeps failing to
+            # get in (a member that never acknowledges) is not waited on
+            # for ever.
+            to_come = max(0, announced_at - observed) + 2
+            deadline = max(given, min(moved_at + to_come * round_seconds,
+                                      given + (JOIN_MARGIN + 2) * round_seconds))
 
         floor = observed + JOIN_MARGIN
         if announced_at is None or announced_at < observed:

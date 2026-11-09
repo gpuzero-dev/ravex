@@ -207,3 +207,96 @@ def test_a_member_acknowledges_before_it_says_the_announced_round_has_come():
     store.set = watching
     _membership.serve_joins(store, Exchange(), Loop(2), member)
     assert seen == [[]], "the round was on the store before the acknowledgement: %s" % seen
+
+
+# ─── a join over slow rounds (GPU-234) ───────────────────────────────────
+
+
+class Published:
+    """Where the members' exchange writes the outer parameters for a round,
+    and where the joiner's reads them: one dict, for threads in one process."""
+
+    def __init__(self):
+        self.by_round = {}
+
+    def publish_state(self, payload, round_number):
+        self.by_round[round_number] = payload
+
+    def fetch_state(self, members, round_number, expectation, deadline):
+        from types import SimpleNamespace
+
+        while time.monotonic() < deadline:
+            if round_number in self.by_round:
+                return SimpleNamespace(delta=self.by_round[round_number])
+            time.sleep(0.01)
+        return None
+
+
+class Joiner(Loop):
+    """A joining node's loop as far as `apply_state` uses it."""
+
+    def __init__(self):
+        from types import SimpleNamespace
+
+        super().__init__(0)
+        self.optimizer = SimpleNamespace(buffers={})
+        self.written_back = False
+
+    def write_back(self):
+        self.written_back = True
+
+
+def _members_at_a_pace(store, published, seconds, stop):
+    """Two members closing a round every ``seconds``: what the joiner sees
+    of a run is its round on the store, which moves only at a boundary."""
+    loops = [Loop(5) for _ in range(BASE_WORLD)]
+    members = [_membership.Membership(store, rank, BASE_WORLD) for rank in range(BASE_WORLD)]
+    while not stop.is_set():
+        for loop, member in zip(loops, members):
+            _membership.serve_joins(store, published, loop, member)
+        stop.wait(seconds)
+        for loop in loops:
+            loop.round_number += 1
+
+
+def test_a_join_over_rounds_longer_than_its_deadline_still_gets_in():
+    """Rounds of 0.4 s and a deadline of 0.6 s: the join waits for the round
+    to move, then two more, and its round's state comes at the end of that
+    one - about three rounds, twice the deadline. It used to give up every
+    time; it now waits the rounds the run is measured to take. The ratio,
+    not the speed of the machine, is what the test holds."""
+    import threading
+
+    store = FakeStore()
+    published = Published()
+    stop = threading.Event()
+    members = threading.Thread(target=_members_at_a_pace, args=(store, published, 0.4, stop), daemon=True)
+    members.start()
+    try:
+        joiner = Joiner()
+        began = time.monotonic()
+        assert _membership.join(store, published, joiner, BASE_WORLD, BASE_WORLD, began + 0.6)
+        assert time.monotonic() - began > 0.6, "it got in within the deadline: the test proves nothing"
+        assert joiner.round_number >= 7 and joiner.written_back
+    finally:
+        stop.set()
+        members.join(5)
+
+
+def test_a_run_that_stops_moving_is_not_waited_on_past_its_deadline():
+    """The rounds measured while the run moved are no reason to wait once it
+    has stopped: a run whose round never reaches the one announced ends the
+    join at the deadline, plus at most the rounds one join takes."""
+    import threading
+
+    store = FakeStore()
+    published = Published()
+    stop = threading.Event()
+    members = threading.Thread(target=_members_at_a_pace, args=(store, published, 0.2, stop), daemon=True)
+    members.start()
+    threading.Timer(0.5, stop.set).start()
+    began = time.monotonic()
+    assert not _membership.join(store, published, Joiner(), BASE_WORLD, BASE_WORLD, began + 1.0)
+    waited = time.monotonic() - began
+    assert waited < 1.0 + (_membership.JOIN_MARGIN + 2) * 0.2 + 1.0
+    members.join(5)
