@@ -24,6 +24,13 @@
 
 ### Fixed
 
+- **No false "No run_id is set" on a resume over a rendezvous (GPU-238).** A
+  node that resumes a run has the run's identity in the `run.json` its store
+  brought back, which wins over any `run_id` and is what its metrics are sent
+  under; the warning looked at `run_id` alone, so every node of a run on
+  several nodes resumed without `RAVEX_RUN_ID` said it would record a run of
+  its own while the platform kept showing one. It now speaks only when the
+  node's `run.json` was written by this execution with an id of its own.
 - **A loop without a DataLoader resumed on different batches (GPU-367).** Its
   checkpoint is taken at the first forward after the step, and by then a loop
   that draws its batch at the top of the iteration - `torch.randint` over a

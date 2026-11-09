@@ -303,6 +303,10 @@ class RavexRuntime:
         #: writes it: one store, one document, and eight ranks racing to create
         #: it would mean eight ids for one run.
         self._run_record: Any = None
+        # Whether the store's ``run.json`` was there before this execution:
+        # a resume's, brought back from the bucket, rather than one this
+        # execution made with an id of its own (GPU-238).
+        self._run_record_inherited = False
         #: The sentence for whoever looks at the run when this execution
         #: resumed from an older checkpoint than the newest, because the newest
         #: would not read (GPU-241). Written into every ``status.json`` of this
@@ -985,9 +989,10 @@ class RavexRuntime:
             return
         try:
             from ravex import __version__
-            from ravex._runs import RUN_FILE, STATUS_FILE, ensure_run, write_status
+            from ravex._runs import RUN_FILE, STATUS_FILE, ensure_run, read_json, write_status
 
             directory = self.config.storage.path
+            self._run_record_inherited = read_json(os.path.join(directory, RUN_FILE)) is not None
             self._run_record = ensure_run(
                 directory,
                 run_id=self.config.run_id,
@@ -1265,6 +1270,27 @@ class RavexRuntime:
             return None
         return self._outer or None
 
+    def _knows_its_run(self) -> bool:
+        """Whether this node records the run every node does, so the platform
+        shows them as one.
+
+        It does when it was told which (``run_id``), and also when it resumes
+        one: the store's ``run.json``, brought back from the bucket, is the
+        run's and wins over any ``run_id`` (``ensure_run``), and that is what
+        the metrics are sent under. smith gives no ``RAVEX_RUN_ID`` to a
+        resume, and every node said it would record a run of its own while
+        the run stayed one (GPU-238). A ``run.json`` this execution wrote is
+        not one: with no ``run_id`` its id is the node's own.
+        """
+        if self.config.run_id:
+            return True
+        if self._run_record is not None:
+            return bool(self._run_record_inherited and self._run_record.get("run_id"))
+        from ravex._runs import RUN_FILE, read_json
+
+        record = read_json(os.path.join(self.config.storage.path, RUN_FILE))
+        return bool(record and record.get("run_id"))
+
     def _build_outer_loop(self):
         """Open the round exchange and the outer loop, or explain the refusal.
 
@@ -1299,7 +1325,7 @@ class RavexRuntime:
             # assigned once, to everybody at the same moment, by torchrun.
             store, rank, world, joining = self._join_rendezvous(address)
             ceiling = partial(_rendezvous.registered, store)
-            if not self.config.run_id:
+            if not self._knows_its_run():
                 # GPU-135: nodes started on their own each describe a run of
                 # their own unless they are told which one they are.
                 logger.warning(

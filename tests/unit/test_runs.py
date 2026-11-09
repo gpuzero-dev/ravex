@@ -296,3 +296,43 @@ class TestComingBackAtAStep:
 
         again()
         assert seen["after"] == 5
+
+
+# ─── who the run is, for the outer loop's warning (GPU-238) ──────────────
+
+
+def _node(tmp_path, run_id=None, record=None, inherited=False):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(
+        config=SimpleNamespace(run_id=run_id, storage=SimpleNamespace(path=str(tmp_path))),
+        _run_record=record,
+        _run_record_inherited=inherited,
+    )
+
+
+def _knows(node):
+    from ravex._runtime import RavexRuntime
+
+    return RavexRuntime._knows_its_run(node)
+
+
+def test_a_node_told_its_run_knows_it(tmp_path):
+    assert _knows(_node(tmp_path, run_id="harold-001"))
+
+
+def test_a_resumed_store_names_the_run_without_a_run_id(tmp_path):
+    """smith gives a resume no RAVEX_RUN_ID: the run is the one in the
+    store's run.json, brought back from the bucket, and every node of a run
+    on several resumes its own copy of it."""
+    assert _knows(_node(tmp_path, record={"run_id": "twonode-001"}, inherited=True))
+    # Asked before the record is opened: the store says it already.
+    (tmp_path / "run.json").write_text('{"run_id": "twonode-001"}')
+    assert _knows(_node(tmp_path))
+
+
+def test_a_run_json_this_execution_wrote_is_the_nodes_own(tmp_path):
+    """No run_id and a fresh store: ensure_run gave it an id of its own,
+    which no other node has - the case the warning is for."""
+    assert not _knows(_node(tmp_path, record={"run_id": "r-1a2b"}, inherited=False))
+    assert not _knows(_node(tmp_path))
