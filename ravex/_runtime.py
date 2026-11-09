@@ -2419,11 +2419,20 @@ class RavexRuntime:
         if loop.inner_steps is None:
             return
         from ravex._dist.exchange import decide_inner_steps
-        from ravex._dist.outer import next_inner_steps
+        from ravex._dist.outer import next_inner_steps, rounds_ceiling
 
         overlap = bool(self.config.outer_overlap)
         current = int(loop.inner_steps)
-        proposal = current
+        # The run's rounds, when its length is known (GPU-282). From this
+        # node's own steps: every node proposes, and every node takes the
+        # first proposal on the store, so the ceiling is the same for all.
+        max_steps = self.config.max_steps
+        ceiling = rounds_ceiling(
+            max(0, int(max_steps) - int(self.registry.step_count)) if max_steps else None,
+            int(report["round"]) + 1,
+            int(self.config.outer_min_rounds),
+        )
+        proposal = current if ceiling is None else min(current, ceiling)
         if report.get("nodes"):
             proposal = next_inner_steps(
                 current,
@@ -2434,6 +2443,7 @@ class RavexRuntime:
                 share=self.config.outer_network_share,
                 low=self.config.outer_min_inner_steps,
                 high=self.config.outer_max_inner_steps,
+                ceiling=ceiling,
             )
         try:
             decided = decide_inner_steps(

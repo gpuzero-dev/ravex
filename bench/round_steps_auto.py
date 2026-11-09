@@ -47,19 +47,34 @@ slow (200 s, 2400 s)   2.0950 (11)     **1.4964** (5) 1.8066 (3)     1.3906
 medium, overlapped     1.3989 (40)     **1.3525** (9) 1.3594 (32)    1.3906
 ====================== =============== ============== ============== ========
 
+Re-measured on 2026-11-09 with ``outer_min_rounds`` (GPU-282), same seeds:
+
+====================== =============== ============== ============== ========
+link (network, budget) H=64            H=500          auto           one node
+====================== =============== ============== ============== ========
+medium (60 s, 2400 s)  -               -              1.3737 (10)    1.3947
+slow (200 s, 2400 s)   -               1.5079 (5)     **1.4328** (5) 1.3944
+====================== =============== ============== ============== ========
+
 **Where it works, it lands next to the best fixed H without being told
 which one that is.** On the fast link it goes from 500 to ~65 in four rounds
 and ends 0.02 behind H=64, 0.03 ahead of H=500; on the medium one it settles
 at 330-400 and is the best arm, by a little. Neither fixed value is right on
 both links, and each loses by 0.05-0.1 on the one it does not suit.
 
-**On the slow link it loses, and the reason is the one the issue names.** It
+**On the slow link it lost, and the reason was the one the issue names.** It
 does what it is told - H to 1300-1400, the wait from 45% to 30% - and that
 leaves three rounds in the budget, which is the ceiling
 ``bench/outer_convergence.py`` found on rounds rather than on H: 1.81 against
 1.50 at H=500's five rounds. A rule about the network's share cannot see that
 the run is running out of rounds; a floor on rounds per budget, or a lower
 ``outer_max_inner_steps``, would.
+
+**With a floor on rounds it wins there too** (GPU-282). ``--min-rounds 5``
+(the default, as ``outer_min_rounds``) caps H at the steps left over the
+rounds still owed: 500, then ~960, 810, 620 and 260, five rounds and 3150-3200
+steps against H=500's 2500, and 0.075 ahead of it on every seed. On the
+medium link the cap does not bite and auto stays where it was.
 
 **Overlapped, a quarter of the round waiting is the wrong target.** H=500
 hides the whole network (0% waiting) and wins; ``auto`` brings H down to ~90
@@ -87,9 +102,11 @@ from outer_convergence import corpus_bytes, evaluate, model_for, shards_for, tra
 from ravex._dist.outer import (
     DEFAULT_MAX_INNER_STEPS,
     DEFAULT_MIN_INNER_STEPS,
+    DEFAULT_MIN_ROUNDS,
     DEFAULT_NETWORK_SHARE,
     OuterLoop,
     next_inner_steps,
+    rounds_ceiling,
 )
 
 
@@ -119,6 +136,10 @@ def run(shards, args, arm, overlap):
     def decide(trained_steps, network_seconds):
         if not auto:
             return
+        # The run's length, as `max_steps` would give it to the runtime: the
+        # steps the budget still holds at a step a step's time (GPU-282).
+        steps_left = int(max(0.0, args.budget_seconds - clock) / step)
+        ceiling = rounds_ceiling(steps_left, len(history), args.min_rounds)
         # Every node measured the same simulated round, so the store's answer
         # is the one proposal; `decide_inner_steps` is tested on its own.
         current = loops[0].inner_steps
@@ -131,6 +152,7 @@ def run(shards, args, arm, overlap):
             share=args.share,
             low=args.low,
             high=args.high,
+            ceiling=ceiling,
         )
         for loop in loops:
             loop.set_inner_steps(decided, now=not overlap)
@@ -201,6 +223,8 @@ def main():
     parser.add_argument("--share", type=float, default=DEFAULT_NETWORK_SHARE)
     parser.add_argument("--low", type=int, default=DEFAULT_MIN_INNER_STEPS)
     parser.add_argument("--high", type=int, default=DEFAULT_MAX_INNER_STEPS)
+    parser.add_argument("--min-rounds", type=int, default=DEFAULT_MIN_ROUNDS,
+                        help="outer_min_rounds; 0 for the rule of before GPU-282")
     parser.add_argument("--step-seconds", type=float, default=0.5,
                         help="simulated seconds of one local step")
     parser.add_argument("--network-seconds", type=float, default=60.0,

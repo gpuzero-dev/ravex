@@ -105,6 +105,29 @@ DEFAULT_NETWORK_SHARE = 0.25
 DEFAULT_MIN_INNER_STEPS = 32
 DEFAULT_MAX_INNER_STEPS = 2000
 
+#: The fewest rounds an automatic H leaves a run whose length is known
+#: (GPU-282). On the slow link of ``bench/round_steps_auto.py`` the network
+#: share took H to 1300-1400 and left three rounds in the budget, which lost
+#: to H=500's five by 0.3 nats; ``bench/outer_convergence.py`` had found the
+#: same ceiling on rounds rather than on H. Five is the count that held there,
+#: not a measured threshold.
+DEFAULT_MIN_ROUNDS = 5
+
+
+def rounds_ceiling(steps_left: Optional[int], rounds_done: int, min_rounds: int) -> Optional[int]:
+    """The largest H that still leaves the run ``min_rounds`` rounds, or None.
+
+    ``steps_left`` is what the run still has to train - ``max_steps`` less
+    the steps taken - and ``rounds_done`` the rounds already closed. A run
+    that has had its rounds is not held back any longer, and one whose
+    length nobody knows has no ceiling here: ``outer_max_inner_steps`` is
+    the bound for it, as before."""
+    if steps_left is None or min_rounds <= 0:
+        return None
+    still = max(1, int(min_rounds) - max(0, int(rounds_done)))
+    return max(1, int(steps_left) // still)
+
+
 #: How far one round may move H, up or down: a single round's timing is one
 #: noisy sample, and a link that stalls once should not double the next ten.
 MAX_STEP_FACTOR = 2.0
@@ -125,6 +148,7 @@ def next_inner_steps(
     share: float = DEFAULT_NETWORK_SHARE,
     low: int = DEFAULT_MIN_INNER_STEPS,
     high: int = DEFAULT_MAX_INNER_STEPS,
+    ceiling: Optional[int] = None,
 ) -> int:
     """The H at which the training waits ``share`` of the round for the network.
 
@@ -150,14 +174,22 @@ def next_inner_steps(
     room, not only up when it does not - down to ``low`` and no further, since
     an H too small is worse still.
 
+    **Nor more than the run's rounds allow** (GPU-282): ``ceiling``, from
+    :func:`rounds_ceiling`, is the largest H that still leaves a run of known
+    length its fewest rounds. The share cannot see a run running out of
+    rounds, and on a slow link it had H leave three. The ceiling wins over the
+    share and over ``low``: an H that leaves too few rounds is the worse model
+    whatever the network costs.
+
     Unchanged when the round measured nothing usable: no step trained, no
-    clock, a share outside ``(0, 1)``.
+    clock, a share outside ``(0, 1)`` - but never above ``ceiling``.
     """
     current = int(current)
+    capped = (lambda h: min(h, int(ceiling))) if ceiling is not None else (lambda h: h)
     if trained_steps <= 0 or trained_seconds <= 0 or network_seconds < 0:
-        return current
+        return capped(current)
     if not 0.0 < share < 1.0:
-        return current
+        return capped(current)
     per_step = trained_seconds / trained_steps
     if overlap:
         wanted = network_seconds * (1.0 - share) / per_step
@@ -166,8 +198,8 @@ def next_inner_steps(
     wanted = min(max(wanted, current / MAX_STEP_FACTOR), current * MAX_STEP_FACTOR)
     wanted = min(max(wanted, float(low)), float(high))
     if abs(wanted - current) < STEP_DEADBAND * current:
-        return current
-    return max(int(round(wanted)), 1)
+        return capped(current)
+    return capped(max(int(round(wanted)), 1))
 
 
 def trainable(model) -> List[Tuple[str, Any]]:

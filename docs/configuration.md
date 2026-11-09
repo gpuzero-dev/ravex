@@ -1068,6 +1068,7 @@ outer_inner_steps: 500       # or auto, see below
 outer_network_share: 0.25    # with auto: the share of the round spent waiting
 outer_min_inner_steps: 32    # with auto: the bounds H moves inside
 outer_max_inner_steps: 2000
+outer_min_rounds: 5          # with auto and max_steps: H leaves the run this many rounds
 outer_round_seconds: 0       # or a wall clock, see below
 outer_lr: 0.7
 outer_momentum: 0.7          # not DiLoCo's 0.9, see below
@@ -1165,9 +1166,19 @@ what an H does to the loss. `bench/round_steps_auto.py` puts it against fixed
 H at equal wall clock on a simulated link (two nodes, a small model, three
 seeds): on a fast link and a medium one it ends within 0.02 of the better
 fixed H - a different one on each - where each fixed H loses 0.05-0.1 on the
-link it does not suit. On a slow link it loses to H=500, because the H it
-reaches leaves the run three rounds; there, cap it with
-`outer_max_inner_steps`. With `outer_overlap` set the share lower than a
+link it does not suit. On a slow link it used to lose to H=500, because the H
+it reached left the run three rounds.
+
+**`outer_min_rounds` keeps the run some rounds** (GPU-282). With `max_steps`
+known, H never goes above the steps left divided by the rounds still owed to
+`outer_min_rounds` (5 by default): after the first round of 500 in a run of
+4800 steps, H can reach at most 4300 / 4 = 1075. The ceiling wins over the halving limit and over
+`outer_min_inner_steps`, and every node computes it from the run's step count
+and round, which they share, so two nodes that measure their link differently
+still end up with the same H. `0` turns it off; without `max_steps` there is
+nothing to divide and H moves as above. On the slow link of
+`bench/round_steps_auto.py` it takes auto from 1.81 to 1.43, 0.075 ahead of
+H=500 on each of three seeds; on the medium link it does not bite. With `outer_overlap` set the share lower than a
 quarter: hiding the whole network is what won. It does not go with
 `outer_round_seconds`: the clock closes the round wherever H stands, so the
 rule would read every round as too short. Both set, H stays fixed and the

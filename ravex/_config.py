@@ -618,6 +618,13 @@ class RavexConfig:
     outer_min_inner_steps: int = 32
     outer_max_inner_steps: int = 2000
 
+    #: The fewest rounds an automatic H leaves the run, when `max_steps`
+    #: says how long it is (GPU-282): H stays at or below the steps left
+    #: over the rounds still owed. Without `max_steps` nothing is known of
+    #: the run's length, and `outer_max_inner_steps` is the bound. 0 turns
+    #: it off. Also ``RAVEX_OUTER_MIN_ROUNDS``.
+    outer_min_rounds: int = 5
+
     #: Close the round on the clock instead of, or as well as, on the count.
     #: **This is the one that makes heterogeneous nodes work**: every node
     #: stops at the same moment having done as many steps as it could, and the
@@ -995,6 +1002,8 @@ class RavexConfig:
             self.outer_min_inner_steps = _as_int(value, self.outer_min_inner_steps)
         if (value := get("OUTER_MAX_INNER_STEPS")) is not None:
             self.outer_max_inner_steps = _as_int(value, self.outer_max_inner_steps)
+        if (value := get("OUTER_MIN_ROUNDS")) is not None:
+            self.outer_min_rounds = _as_int(value, self.outer_min_rounds)
         if (value := get("OUTER_ROUND_SECONDS")) is not None:
             self.outer_round_seconds = _as_float(value, self.outer_round_seconds)
         if (value := get("OUTER_LR")) is not None:
@@ -1104,6 +1113,7 @@ class RavexConfig:
             "outer_inner_steps",
             "outer_min_inner_steps",
             "outer_max_inner_steps",
+            "outer_min_rounds",
             "outer_deadline",
             "metrics_every",
             "histograms_every",
@@ -1263,6 +1273,8 @@ class RavexConfig:
             self.outer_round_seconds = 0.0
         if self.outer_min_inner_steps < 1:
             self.outer_min_inner_steps = 1
+        if self.outer_min_rounds < 0:
+            self.outer_min_rounds = 0
         if self.outer_max_inner_steps < self.outer_min_inner_steps:
             self.problems.append(
                 f"outer_max_inner_steps={self.outer_max_inner_steps} is below "

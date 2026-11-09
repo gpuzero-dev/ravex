@@ -17,6 +17,12 @@
 
 ### Changed
 
+- **Auto H keeps the run some rounds (GPU-282).** With `max_steps` known, H
+  never goes above the steps left divided by the rounds still owed to the new
+  `outer_min_rounds` (5 by default). On a slow link the H the network asked
+  for left the run three rounds, and it lost to a fixed H=500. The ceiling
+  comes from the run's step count and round, which every node shares, so the
+  nodes still agree on H. `outer_min_rounds: 0` restores the old rule.
 - **A SIGTERM handler that is already there is a warning (GPU-366)**, not a
   debug line: Ravex does not take it over, so a stop does not save a
   checkpoint first, and nothing else said so. `handle_sigterm: false`

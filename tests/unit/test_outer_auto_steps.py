@@ -16,7 +16,7 @@ torch = pytest.importorskip("torch")
 from ravex._config import RavexConfig  # noqa: E402
 from ravex._dist.exchange import decide_inner_steps  # noqa: E402
 from ravex._dist.membership import apply_state, state_payload  # noqa: E402
-from ravex._dist.outer import OuterLoop, next_inner_steps  # noqa: E402
+from ravex._dist.outer import OuterLoop, next_inner_steps, rounds_ceiling  # noqa: E402
 
 from test_dist_exchange import FakeStore  # noqa: E402
 from test_dist_outer import tiny_model, train_locally, two_shards  # noqa: E402
@@ -205,6 +205,44 @@ def test_nodes_that_measured_differently_change_h_together_and_hold_one_model():
             )
 
     assert len(set(seen)) > 1, "H never moved, so nothing was tested: %s" % seen
+
+
+# ─── the run's rounds (GPU-282) ─────────────────────────────────────
+
+
+def test_a_run_of_known_length_keeps_its_fewest_rounds():
+    """The slow link of the bench: the share asks for H = 1400, and a run of
+    4800 steps with none of its five rounds closed gets 960."""
+    ceiling = rounds_ceiling(4800, 0, 5)
+    assert ceiling == 960
+    assert blocking(500, trained=250.0, network=200.0, high=5000, ceiling=ceiling) == 960
+    # One that has had its rounds is held to nothing but what is left.
+    assert rounds_ceiling(1000, 5, 5) == 1000
+
+
+def test_the_ceiling_brings_h_down_past_the_halving_limit():
+    """An H that would leave too few rounds is the worse model whatever the
+    network costs: the ceiling wins over the step limit, over the deadband,
+    and over a round that measured nothing."""
+    assert blocking(2000, trained=200.0, network=100.0, ceiling=300) == 300
+    assert blocking(500, trained=0.0, network=1.0, steps=0, ceiling=300) == 300
+
+
+def test_without_a_length_there_is_no_ceiling():
+    assert rounds_ceiling(None, 0, 5) is None
+    assert rounds_ceiling(4800, 0, 0) is None
+
+
+def test_nodes_that_measure_differently_take_the_same_capped_h():
+    """Each node proposes under its own ceiling; the store's first answer is
+    everyone's, so the H the run takes is capped for both."""
+    store = FakeStore()
+    proposals = [
+        blocking(500, trained=250.0, network=network, high=5000, ceiling=rounds_ceiling(4800, 0, 5))
+        for network in (200.0, 600.0)
+    ]
+    decided = [decide_inner_steps(store, b"job", 0, index, h, 0.0) for index, h in enumerate(proposals)]
+    assert decided[0] == decided[1] <= 960
 
 
 # ─── configuration ──────────────────────────────────────────────────
