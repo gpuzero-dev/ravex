@@ -89,6 +89,9 @@ _JOB_NAME = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 #: The counter node numbers come from.
 NEXT_KEY = "ravex/gpu129/next"
 
+#: Who holds a base member's number, once one does (GPU-237).
+CLAIM_KEY = "ravex/gpu237/claim/%d"
+
 #: How often a waiting base member looks again.
 POLL = 0.05
 
@@ -465,6 +468,35 @@ def reach(address: str, deadline: float, silence: float = SILENCE_PATIENCE,
 def register(store) -> int:
     """This node's number: the next one, never handed out before."""
     return int(store.add(NEXT_KEY, 1)) - 1
+
+
+def take_number(store, base: int, wanted: Optional[int] = None) -> Tuple[int, bool]:
+    """This node's number and whether it joins a run in progress (GPU-237).
+
+    Arrival still decides who starts the run: the first ``base`` nodes to
+    arrive are its base members, any later one joins, as GPU-129 made it.
+    What changes is which number a base member gets. One that knows its
+    place in the run (``wanted``: ``outer_member``, the node of the console
+    its store belongs to) gets that place, if no other node holds it, so
+    "node 0" in the logs and the round reports is the console's node 0 also
+    when node 1 restored its store first and arrived first.
+
+    The numbers below ``base`` are claimed one by one, so two nodes never
+    hold one: a node that wanted none, or one already held, takes its
+    arrival's number or else the lowest one left - there is always one,
+    since only ``base`` nodes ever claim. A joiner keeps its arrival's
+    number, never below ``base``, so the numbers of all nodes stay unique and
+    below the counter, which is how far peers look for join keys.
+    """
+    arrival = register(store)
+    if arrival >= base:
+        return arrival, True
+    tried = ([wanted] if wanted is not None and 0 <= wanted < base else []) + [arrival] + list(range(base))
+    for number in tried:
+        if int(store.add(CLAIM_KEY % number, 1)) == 1:
+            return number, False
+    # Not reachable: base arrivals for base numbers.
+    raise RuntimeError("no node number below %d is free at the rendezvous" % base)
 
 
 def registered(store) -> int:

@@ -1264,6 +1264,13 @@ outer_rendezvous: 10.0.0.5:29400,10.0.0.6:29400,10.0.0.7:29400   # the first is 
 outer_member: 1                      # or RAVEX_OUTER_MEMBER: this node's address in that list
 ```
 
+A starting node's place is also its number in the run (GPU-237): node 1 is
+node 1 in every line of the log and in the round reports, also when it reaches
+the server before node 0, as it does when it restores its store first on a
+resume. Which nodes start the run is still decided by who arrives first; a
+node that arrives once they all have joins in progress, with a number of its
+own above theirs.
+
 When the server stops answering, the nodes still training look for one serving
 the run's next *epoch* at those addresses, in order; if none does, the node
 whose place comes first starts `ravex rendezvous` on its own address, in a

@@ -24,6 +24,13 @@
 
 ### Fixed
 
+- **A starting node's number is its place, not its arrival (GPU-237).** At a
+  resume the node that restored its store first reached the rendezvous first
+  and became node 0, so "node 0" in the log, the seed source and the round
+  reports was another machine than the one the platform calls node 0. A node
+  with `outer_member` now takes that number when it is among the ones that
+  start the run (`rendezvous.take_number`); who starts it, and every joiner's
+  number, is still decided by arrival, and no two nodes ever hold a number.
 - **No false "No run_id is set" on a resume over a rendezvous (GPU-238).** A
   node that resumes a run has the run's identity in the `run.json` its store
   brought back, which wins over any `run_id` and is what its metrics are sent

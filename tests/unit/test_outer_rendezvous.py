@@ -90,6 +90,49 @@ def test_jobs_on_one_server_count_on_their_own(server):
     ] == [0, 1, 0]
 
 
+def test_a_base_member_takes_its_own_place_whatever_order_it_arrives_in(server):
+    """GPU-237: on a resume, the console's node 1 restored its store first and
+    arrived first. It is node 1 all the same, and node 0 is node 0; a third
+    arrival joins, as it did."""
+    def arrive(wanted):
+        return rendezvous.take_number(rendezvous.connect(server, "job"), 2, wanted)
+
+    assert arrive(1) == (1, False)
+    assert arrive(0) == (0, False)
+    assert arrive(0) == (2, True)
+
+
+def test_no_number_is_held_twice_whatever_the_nodes_ask_for(server):
+    """A node that asks for none, two that ask for the same, one that asks
+    for a place past the base: every base member still gets its own number
+    below the base, and the numbers stay unique."""
+    def arrive(wanted):
+        return rendezvous.take_number(rendezvous.connect(server, "mixed"), 3, wanted)
+
+    taken = [arrive(None), arrive(0), arrive(0), arrive(7)]
+    numbers = [number for number, _ in taken]
+    assert sorted(numbers) == [0, 1, 2, 3]
+    assert [joining for _, joining in taken] == [False, False, False, True]
+    assert taken[0] == (0, False)
+
+
+def test_twenty_nodes_asking_for_their_places_at_once_get_them(server):
+    numbers = {}
+    lock = threading.Lock()
+
+    def arrive(member):
+        number, _ = rendezvous.take_number(rendezvous.connect(server, "many"), 20, member)
+        with lock:
+            numbers[member] = number
+
+    threads = [threading.Thread(target=arrive, args=(member,)) for member in range(20)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(60)
+    assert numbers == {member: member for member in range(20)}
+
+
 def test_a_base_member_waits_for_the_others_and_not_past_its_deadline(server):
     store = rendezvous.connect(server, "job")
     rendezvous.register(store)

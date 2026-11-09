@@ -2064,8 +2064,12 @@ class RavexRuntime:
                     node, address, epoch, job,
                 )
                 return store, node, base, True
-        node = _rendezvous.register(store)
-        if node >= base:
+        # A base member takes its own place in the run when it knows it, not
+        # the order it arrived in: on a resume the node that restored its
+        # store first was rank 0, and the logs read the console's node 1 as
+        # node 0 (GPU-237).
+        node, joining = _rendezvous.take_number(store, base, self.config.outer_member)
+        if joining:
             logger.info(
                 "Node %d at the rendezvous %s, job %s: the %d node(s) that start "
                 "the run are already there, so this one joins it in progress.",
