@@ -97,6 +97,26 @@ COMBINE_MODES = ("mean", "normalized", "step_weighted")
 #: ``bench/round_link_cost.py`` draws when it reports an H for a link.
 DEFAULT_NETWORK_SHARE = 0.25
 
+#: The same with ``outer_overlap`` (GPU-283): none. Overlapped, the training
+#: waits only for what the network outlasts the next round by, so a share of
+#: 0 is the smallest H that hides the network, ``network / step``, and not an
+#: infinite one. A quarter there had auto shrink H below that to wait more, and
+#: on ``bench/round_steps_auto.py``'s medium link the H that just hides the
+#: network beat it.
+DEFAULT_OVERLAP_NETWORK_SHARE = 0.0
+
+
+def network_share(share: Optional[float], overlap: bool) -> float:
+    """The share :func:`next_inner_steps` aims at, ``share`` if one was set.
+
+    ``outer_network_share`` left unset means the default of the mode the run
+    is in, so that turning on ``outer_overlap`` does not leave the rule aiming
+    at the blocking mode's quarter (GPU-283).
+    """
+    if share is None:
+        return DEFAULT_OVERLAP_NETWORK_SHARE if overlap else DEFAULT_NETWORK_SHARE
+    return float(share)
+
 #: The bounds an automatic H stays inside. Below 32 the outer step starts to
 #: overwrite the inner optimizer's progress (H=1 was the worst arm of
 #: ``bench/outer_convergence.py`` by far, H=8 already behind H=64); above 2000
@@ -181,14 +201,19 @@ def next_inner_steps(
     share and over ``low``: an H that leaves too few rounds is the worse model
     whatever the network costs.
 
+    **With the overlap a share of 0 is allowed** (GPU-283), and is the default
+    there (:func:`network_share`): ``H = N / c``, the smallest H whose
+    training outlasts the network. Blocking, 0 would ask for an infinite H.
+
     Unchanged when the round measured nothing usable: no step trained, no
-    clock, a share outside ``(0, 1)`` - but never above ``ceiling``.
+    clock, a share outside ``(0, 1)`` (``[0, 1)`` overlapped) - but never
+    above ``ceiling``.
     """
     current = int(current)
     capped = (lambda h: min(h, int(ceiling))) if ceiling is not None else (lambda h: h)
     if trained_steps <= 0 or trained_seconds <= 0 or network_seconds < 0:
         return capped(current)
-    if not 0.0 < share < 1.0:
+    if not (0.0 < share < 1.0 or (overlap and share == 0.0)):
         return capped(current)
     per_step = trained_seconds / trained_steps
     if overlap:

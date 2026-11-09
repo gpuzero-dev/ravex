@@ -1453,7 +1453,7 @@ class RavexRuntime:
             "of the round for the network" % (
                 self.config.outer_min_inner_steps,
                 self.config.outer_max_inner_steps,
-                100.0 * self.config.outer_network_share,
+                100.0 * self.config.network_share,
             )
             if self.config.outer_auto_steps
             else "",
@@ -2440,7 +2440,7 @@ class RavexRuntime:
                 trained_steps=int(report.get("trained_steps") or 0),
                 network_seconds=float(seconds),
                 overlap=overlap,
-                share=self.config.outer_network_share,
+                share=self.config.network_share,
                 low=self.config.outer_min_inner_steps,
                 high=self.config.outer_max_inner_steps,
                 ceiling=ceiling,
@@ -2475,7 +2475,7 @@ class RavexRuntime:
                 int(report["round"]),
                 float(report.get("trained_seconds") or 0.0),
                 float(seconds),
-                100.0 * self.config.outer_network_share,
+                100.0 * self.config.network_share,
             )
 
     def _write_model_series(self, report: Dict[str, Any], seconds: float) -> None:

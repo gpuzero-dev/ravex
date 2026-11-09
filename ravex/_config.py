@@ -610,8 +610,12 @@ class RavexConfig:
     outer_auto_steps: bool = False
 
     #: The share of the round the training may wait for the network, under
-    #: `outer_auto_steps`. Between 0 and 1. Also ``RAVEX_OUTER_NETWORK_SHARE``.
-    outer_network_share: float = 0.25
+    #: `outer_auto_steps`. Between 0 and 1; 0 only with `outer_overlap`. Unset
+    #: it is the mode's own (GPU-283): a quarter blocking, and 0 overlapped,
+    #: which is the smallest H that hides the network - the share a quarter
+    #: lost to on the bench. :meth:`network_share` is the value in force. Also
+    #: ``RAVEX_OUTER_NETWORK_SHARE``.
+    outer_network_share: Optional[float] = None
 
     #: The bounds of an automatic H. See
     #: `ravex._dist.outer.DEFAULT_MIN_INNER_STEPS` for where they come from.
@@ -997,7 +1001,7 @@ class RavexConfig:
         if (value := get("OUTER_AUTO_STEPS")) is not None:
             self.outer_auto_steps = _as_bool(value, self.outer_auto_steps)
         if (value := get("OUTER_NETWORK_SHARE")) is not None:
-            self.outer_network_share = _as_float(value, self.outer_network_share)
+            self.outer_network_share = _as_float(value, -1.0)
         if (value := get("OUTER_MIN_INNER_STEPS")) is not None:
             self.outer_min_inner_steps = _as_int(value, self.outer_min_inner_steps)
         if (value := get("OUTER_MAX_INNER_STEPS")) is not None:
@@ -1282,14 +1286,20 @@ class RavexConfig:
                 f"{self.outer_min_inner_steps} for both"
             )
             self.outer_max_inner_steps = self.outer_min_inner_steps
-        share = _as_float(self.outer_network_share, -1.0)
-        if not 0.0 < share < 1.0:  # NaN too
-            self.problems.append(
-                f"outer_network_share={self.outer_network_share!r} is not a "
-                "share between 0 and 1; using 0.25"
-            )
-            share = 0.25
-        self.outer_network_share = share
+        if self.outer_network_share is not None:
+            share = _as_float(self.outer_network_share, -1.0)
+            lowest = 0.0 if self.outer_overlap else None
+            if not (0.0 < share < 1.0 or share == lowest):  # NaN too
+                self.problems.append(
+                    f"outer_network_share={self.outer_network_share!r} is not a "
+                    "share between 0 and 1%s; using the default, %s" % (
+                        " (0 only with outer_overlap)" if not self.outer_overlap else "",
+                        "0" if self.outer_overlap else "0.25",
+                    )
+                )
+                self.outer_network_share = None
+            else:
+                self.outer_network_share = share
         if self.outer_auto_steps and self.outer_round_seconds:
             # GPU-231: the clock closes the round wherever H stands, so the
             # rule would read every round as too short and push H to the top
@@ -1562,6 +1572,19 @@ class RavexConfig:
         would find `full_every` already fixed to the first.
         """
         return self.full_every if self.full_every > 0 else self.checkpoint_every
+
+    @property
+    def network_share(self) -> float:
+        """`outer_network_share` with the mode's default resolved (GPU-283).
+
+        At the point of use for the reason `effective_full_every` is: the
+        decorator can turn `outer_overlap` on after the file was read. The
+        values mirror ``ravex._dist.outer.network_share``, which this module
+        cannot import at load.
+        """
+        if self.outer_network_share is None:
+            return 0.0 if self.outer_overlap else 0.25
+        return float(self.outer_network_share)
 
     def describe(self) -> str:
         target = (

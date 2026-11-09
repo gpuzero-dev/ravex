@@ -1065,7 +1065,7 @@ are paid once per H steps.
 ```yaml
 outer_loop: true
 outer_inner_steps: 500       # or auto, see below
-outer_network_share: 0.25    # with auto: the share of the round spent waiting
+outer_network_share: null    # with auto: the share of the round spent waiting; 0.25, or 0 overlapped
 outer_min_inner_steps: 32    # with auto: the bounds H moves inside
 outer_max_inner_steps: 2000
 outer_min_rounds: 5          # with auto and max_steps: H leaves the run this many rounds
@@ -1178,8 +1178,19 @@ and round, which they share, so two nodes that measure their link differently
 still end up with the same H. `0` turns it off; without `max_steps` there is
 nothing to divide and H moves as above. On the slow link of
 `bench/round_steps_auto.py` it takes auto from 1.81 to 1.43, 0.075 ahead of
-H=500 on each of three seeds; on the medium link it does not bite. With `outer_overlap` set the share lower than a
-quarter: hiding the whole network is what won. It does not go with
+H=500 on each of three seeds; on the medium link it does not bite.
+
+**With `outer_overlap` the share left unset is 0** (GPU-283), not a quarter.
+Overlapped, the training waits only for what the network outlasts the next
+round by, so a share of 0 is the smallest H the network fits behind, the
+network's seconds over a step's, and a quarter had auto shrink H below that to
+wait more. Measured overlapped on the same bench: on the medium link auto
+lands 0.003 from H=120, the H that just hides the network, and 0.017 ahead of
+H=500; on the slow link it is level with H=500, which already hides it. On a
+fast link the H that hides the network can be under `outer_min_inner_steps`,
+and there H=64 beat auto at the floor of 32 by 0.02: raise the floor. A share
+set by hand is kept in either mode; 0 is accepted only overlapped, where it
+means something. It does not go with
 `outer_round_seconds`: the clock closes the round wherever H stands, so the
 rule would read every round as too short. Both set, H stays fixed and the
 problem is logged.

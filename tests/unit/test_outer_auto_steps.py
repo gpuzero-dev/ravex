@@ -16,7 +16,7 @@ torch = pytest.importorskip("torch")
 from ravex._config import RavexConfig  # noqa: E402
 from ravex._dist.exchange import decide_inner_steps  # noqa: E402
 from ravex._dist.membership import apply_state, state_payload  # noqa: E402
-from ravex._dist.outer import OuterLoop, next_inner_steps, rounds_ceiling  # noqa: E402
+from ravex._dist.outer import OuterLoop, network_share, next_inner_steps, rounds_ceiling  # noqa: E402
 
 from test_dist_exchange import FakeStore  # noqa: E402
 from test_dist_outer import tiny_model, train_locally, two_shards  # noqa: E402
@@ -284,5 +284,44 @@ def test_bad_bounds_and_shares_are_replaced_and_said(tmp_path, monkeypatch):
     monkeypatch.setenv("RAVEX_OUTER_NETWORK_SHARE", "1.5")
     config = RavexConfig.load()
     assert config.outer_max_inner_steps == config.outer_min_inner_steps == 100
-    assert config.outer_network_share == 0.25
+    assert config.outer_network_share is None and config.network_share == 0.25
     assert len(config.problems) == 2
+
+
+def test_the_share_left_unset_is_the_modes_own(tmp_path, monkeypatch):
+    """GPU-283: a quarter blocking, none overlapped, and a set one either way."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RAVEX_CONFIG", raising=False)
+    monkeypatch.delenv("RAVEX_OUTER_NETWORK_SHARE", raising=False)
+    monkeypatch.setenv("RAVEX_OUTER_INNER_STEPS", "auto")
+    assert RavexConfig.load().network_share == 0.25
+    monkeypatch.setenv("RAVEX_OUTER_OVERLAP", "1")
+    assert RavexConfig.load().network_share == 0.0
+    monkeypatch.setenv("RAVEX_OUTER_NETWORK_SHARE", "0.1")
+    assert RavexConfig.load().network_share == 0.1
+
+
+def test_a_share_of_zero_only_goes_with_the_overlap(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("RAVEX_CONFIG", raising=False)
+    monkeypatch.setenv("RAVEX_OUTER_NETWORK_SHARE", "0")
+    config = RavexConfig.load()
+    assert config.network_share == 0.25
+    assert any("outer_network_share" in problem for problem in config.problems)
+    monkeypatch.setenv("RAVEX_OUTER_OVERLAP", "1")
+    config = RavexConfig.load()
+    assert config.network_share == 0.0 and not config.problems
+
+
+def test_overlapped_with_no_share_h_is_the_network_over_a_step():
+    """GPU-283: 60 s of network at 0.5 s a step is hidden by 120 steps."""
+    h = next_inner_steps(
+        200, trained_seconds=100.0, trained_steps=200, network_seconds=60.0,
+        overlap=True, share=network_share(None, True),
+    )
+    assert h == 120
+    # Blocking a share of 0 means nothing, and H is left where it was.
+    assert next_inner_steps(
+        200, trained_seconds=100.0, trained_steps=200, network_seconds=60.0,
+        overlap=False, share=0.0,
+    ) == 200

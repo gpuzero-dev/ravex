@@ -17,6 +17,12 @@
 
 ### Changed
 
+- **Overlapped, auto H hides the network (GPU-283).** With `outer_overlap`
+  and `outer_network_share` left unset, the share is now 0, the smallest H the
+  network fits behind, instead of the blocking mode's quarter, which had auto
+  shrink H to wait more. On the bench's medium link it lands 0.003 from the H
+  that just hides the network and 0.017 ahead of H=500. Blocking the default
+  stays 0.25, and a share set by hand is kept; 0 is accepted only overlapped.
 - **Auto H keeps the run some rounds (GPU-282).** With `max_steps` known, H
   never goes above the steps left divided by the rounds still owed to the new
   `outer_min_rounds` (5 by default). On a slow link the H the network asked

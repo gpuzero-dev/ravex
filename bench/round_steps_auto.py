@@ -82,6 +82,26 @@ to reach the quarter it was asked for, and buys rounds it pays for in
 waiting - 0.007 behind. With ``outer_overlap`` the share wants to be near 0, and
 ``outer_network_share`` takes anything above it.
 
+**So overlapped the default share is 0** (GPU-283): the smallest H the
+network fits behind, ``network / step``. Re-measured on 2026-11-09, overlapped,
+same seeds, ``--share`` left unset; a different box from the table above, so
+compare inside a row:
+
+==================== ============= ============= ============= ===========
+link (network)       H that hides  H=500         auto, 0       auto, 0.05
+==================== ============= ============= ============= ===========
+fast (10 s, 2000 s)  1.3184 (H=64) 1.3697 (8)    1.3416 (85)   -
+medium (60 s)        1.3378 (120)  1.3577 (9)    1.3410 (30)   1.3463 (31)
+slow (200 s)         -             1.3794 (9)    1.3817 (10)   -
+==================== ============= ============= ============= ===========
+
+On the medium link auto settles at 100-140 and lands 0.003 from H=120, the H
+that just hides 60 s, and 0.017 ahead of H=500; 0.05 is a little worse. On
+the slow link H=500 already hides the network, auto stays near 370-500 and
+ends level with it. On the fast link 10 s is hidden by 20 steps, below
+``outer_min_inner_steps``, so auto sits at 32 and is beaten by H=64 by 0.02 -
+the floor, not the share, and a reason to raise the floor on fast links.
+
 One node alone for the same wall clock is ahead of every group arm on the
 medium and slow links: at these budgets the network eats more than the
 second node brings. That is the budget, not H, and is why the comparison
@@ -103,7 +123,7 @@ from ravex._dist.outer import (
     DEFAULT_MAX_INNER_STEPS,
     DEFAULT_MIN_INNER_STEPS,
     DEFAULT_MIN_ROUNDS,
-    DEFAULT_NETWORK_SHARE,
+    network_share,
     OuterLoop,
     next_inner_steps,
     rounds_ceiling,
@@ -149,7 +169,7 @@ def run(shards, args, arm, overlap):
             trained_steps=trained_steps,
             network_seconds=network_seconds,
             overlap=overlap,
-            share=args.share,
+            share=network_share(args.share, overlap),
             low=args.low,
             high=args.high,
             ceiling=ceiling,
@@ -220,7 +240,8 @@ def main():
     parser.add_argument("--h", type=str, nargs="+", default=["64", "500", "auto"],
                         help="fixed H values, and 'auto'")
     parser.add_argument("--auto-start", type=int, default=500)
-    parser.add_argument("--share", type=float, default=DEFAULT_NETWORK_SHARE)
+    parser.add_argument("--share", type=float, default=None,
+                        help="the share of the round waited; unset, the mode's own (GPU-283)")
     parser.add_argument("--low", type=int, default=DEFAULT_MIN_INNER_STEPS)
     parser.add_argument("--high", type=int, default=DEFAULT_MAX_INNER_STEPS)
     parser.add_argument("--min-rounds", type=int, default=DEFAULT_MIN_ROUNDS,
