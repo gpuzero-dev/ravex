@@ -35,8 +35,9 @@ def quickstart() -> str:
     return match.group(1)
 
 
-def stop_at(command, cwd, needle, env=None):
-    """Run `command` until it prints a line holding `needle`, then Ctrl-C it.
+def stop_at(command, cwd, needle, env=None, signal_name="SIGINT"):
+    """Run `command` until it prints a line holding `needle`, then Ctrl-C it
+    (or send it `signal_name`).
 
     Unbuffered, as a terminal would show it: into a pipe Python buffers stdout
     by the block, so the quickstart's ten short lines arrived only when it had
@@ -52,7 +53,7 @@ def stop_at(command, cwd, needle, env=None):
         for line in process.stdout:
             seen.append(line.strip())
             if needle in line:
-                process.send_signal(signal.SIGINT)
+                process.send_signal(getattr(signal, signal_name))
                 break
         else:
             raise AssertionError("never printed %r; got %r" % (needle, seen[-5:]))
@@ -113,3 +114,47 @@ def test_spiral_runs(tmp_path):
     env = dict(os.environ, RAVEX_STORAGE_PATH=str(tmp_path / "runs" / "mine"))
     lines = run([sys.executable, os.path.join(EXAMPLES, "spiral.py"), "--steps", "200"], tmp_path, env)
     assert lines[-1].startswith("step 200 ")
+
+
+def losses(lines):
+    return [line for line in lines if line.startswith("step ")]
+
+
+def test_train_gpt_killed_resumes_on_the_batches_of_a_run_never_stopped(tmp_path):
+    """nanoGPT's loop: batches drawn with ``torch.randint`` at the top of the
+    iteration, no DataLoader. Killed, it resumes from a checkpoint taken at
+    a forward, after the next batch was drawn, and its losses are the
+    unbroken run's, which they were not before the RNG was kept from the end
+    of the step (GPU-367). The stop with Ctrl-C, from the final checkpoint,
+    is held by tests/unit/test_resume_without_dataloader.py."""
+    script = os.path.join(EXAMPLES, "train_gpt.py")
+    whole_dir, stopped_dir = tmp_path / "whole", tmp_path / "stopped"
+    whole_dir.mkdir()
+    stopped_dir.mkdir()
+
+    whole = run([sys.executable, script], whole_dir)
+    stop_at([sys.executable, script], stopped_dir, "step 200 ", signal_name="SIGKILL")
+    resumed = run([sys.executable, script], stopped_dir)
+
+    assert losses(whole)[-1].startswith("step 400 ")
+    assert losses(resumed) and losses(resumed) == losses(whole)[-len(losses(resumed)):]
+
+
+def test_train_ddp_stopped_under_torchrun_resumes(tmp_path):
+    """Two gloo processes under torchrun, Ctrl-C to torchrun, the same
+    command again: it says where it came back and ends at max_steps, on the
+    losses of a run never stopped (GPU-367)."""
+    script = os.path.join(EXAMPLES, "train_ddp.py")
+    command = [sys.executable, "-m", "torch.distributed.run", "--nproc-per-node", "2", script]
+    whole_dir, stopped_dir = tmp_path / "whole", tmp_path / "stopped"
+    whole_dir.mkdir()
+    stopped_dir.mkdir()
+
+    whole = run(command, whole_dir)
+    stop_at(command, stopped_dir, "step 200 ")
+    resumed = run(command, stopped_dir)
+
+    assert losses(whole)[-1].startswith("step 600 ")
+    start = int(losses(resumed)[0].split()[1])
+    assert start > 200, "the second run started over: %r" % resumed[:2]
+    assert losses(resumed) == losses(whole)[-len(losses(resumed)):]

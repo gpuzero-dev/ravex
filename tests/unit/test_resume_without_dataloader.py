@@ -103,3 +103,46 @@ def test_the_hooks_come_off_when_the_run_ends(storage):
     train()
     assert len(kept["model"]._forward_pre_hooks) == 0
     kept["model"](torch.randn(2, 4))
+
+
+class _Stop(Exception):
+    pass
+
+
+def drawn(steps, stop_after=None):
+    """Train to `steps` on batches drawn from the global RNG at the top of
+    each iteration, nanoGPT's ``torch.randint`` way; with `stop_after`, stop
+    with the next batch already drawn, as a Ctrl-C or a kill there would."""
+
+    @ravex.train_loop(backend="torch_save", checkpoint_every=3)
+    def train():
+        torch.manual_seed(0)
+        model = torch.nn.Linear(4, 2)
+        optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+        while ravex.step() < steps:
+            x = torch.randn(8, 4)
+            if stop_after is not None and ravex.step() == stop_after:
+                raise _Stop
+            optimizer.zero_grad()
+            model(x).pow(2).mean().backward()
+            optimizer.step()
+        return [p.detach().clone() for p in model.parameters()]
+
+    return train()
+
+
+def test_a_run_stopped_after_drawing_its_next_batch_resumes_on_the_same_batches(tmp_path, monkeypatch):
+    """The checkpoint of step N holds the RNG as step N left it, not as the
+    draw of the next batch did: collected at the stop, or at the first forward
+    after the step, it had already drawn, and the resumed run trained on the
+    batch after the one it should have, every step after (GPU-367)."""
+    monkeypatch.setenv("RAVEX_STORAGE_PATH", str(tmp_path / "whole"))
+    whole = drawn(10)
+
+    monkeypatch.setenv("RAVEX_STORAGE_PATH", str(tmp_path / "split"))
+    with pytest.raises(_Stop):
+        drawn(10, stop_after=5)
+    split = drawn(10)
+
+    for left, right in zip(whole, split):
+        assert torch.equal(left, right)

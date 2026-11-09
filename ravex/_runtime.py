@@ -20,6 +20,7 @@ stderr.
 
 from __future__ import annotations
 
+import collections
 import logging
 import os
 import signal
@@ -223,6 +224,10 @@ class RavexRuntime:
         # and whether the observation has already been made.
         self._last_checkpoint_end: Optional[float] = None
         self._cadence_warned = False
+        # The step of this process's first handoff, which its warm-up is
+        # counted from, and the last handoffs' (cost, interval) after it.
+        self._cadence_first_step: Optional[int] = None
+        self._cadence_samples: collections.deque = collections.deque(maxlen=self._CADENCE_WINDOW)
         self._emergency_requested = False
         self._emergency_active: Optional[bool] = None
         self._emergency_group = None
@@ -731,6 +736,10 @@ class RavexRuntime:
         # The next forward of a watched model is the top of the next
         # iteration; see `watch_iterations` (GPU-276).
         self._iteration_armed = True
+        if self.config.track_rng and not self.registry.dataloaders:
+            # The checkpoint of this step is taken at that forward, after the
+            # next batch is drawn: it takes the RNG from here (GPU-367).
+            self.registry.keep_rng_at_step()
         if self._metrics is not None:
             self._log_step_metrics(optimizer)
             self._log_training_metrics(optimizer)
@@ -3681,16 +3690,41 @@ class RavexRuntime:
             )
         self._announce("%s in %s; %s" % (what, self.config.storage.path, until))
 
+    def announce_stopped(self) -> None:
+        """Say where a run stopped with Ctrl-C can be taken up again.
+
+        Called after the teardown, so the final checkpoint is written. The
+        ``KeyboardInterrupt`` goes on to print its traceback, which a new user
+        reads as a crash; this line, just above it, says it was not and what
+        to do next (GPU-367)."""
+        step = self._last_saved_step
+        if step is None:
+            self._announce("stopped before the first checkpoint; the same command starts over")
+            return
+        self._announce(
+            "stopped; step %d is saved in %s, and the same command resumes from it"
+            % (step, self.config.storage.path)
+        )
+
     #: Fraction of wall time going into checkpoint handoff above which the
     #: cadence is worth mentioning. A fifth is the point where a reader would
     #: rather have been told: below it the cost reads as overhead, above it as
     #: a choice.
     _CADENCE_WARN_FRACTION = 0.2
 
-    #: Not before this step: the first handoffs pay for warming up (the first
-    #: full, the writer starting, allocations), and a ratio taken there said
-    #: "37% of wall time" at step 12 of a run that settled far below it.
+    #: Not before this many steps after this process's first handoff: the
+    #: first handoffs pay for warming up (the first full, the writer starting,
+    #: allocations), and a ratio taken there said "37% of wall time" at step
+    #: 12 of a run that settled far below it. Counted from this process's
+    #: start and not from step 0, because a resumed run warms up again: the
+    #: README's quickstart, resumed at step 600, warned at step 602 (GPU-367).
     _CADENCE_WARN_AFTER_STEP = 50
+
+    #: The ratio is taken over the last this many handoffs, not one: a single
+    #: interval where the writer pushed back read as the run's cost, and the
+    #: quickstart, whose handoff averages 4 ms, warned of "79% of wall time"
+    #: on a 12 ms one (GPU-367).
+    _CADENCE_WINDOW = 20
 
     #: Nor for a handoff shorter than this, in seconds. A model small enough
     #: to step in a millisecond spends a large share of nothing on its
@@ -3721,12 +3755,20 @@ class RavexRuntime:
         """
         previous = self._last_checkpoint_end
         self._last_checkpoint_end = finished
+        if self._cadence_first_step is None:
+            self._cadence_first_step = step
         if previous is None or self._cadence_warned:
             return
+        if step - self._cadence_first_step < self._CADENCE_WARN_AFTER_STEP:
+            return
 
-        interval = finished - previous
-        cost = sum(v for k, v in phases.items() if k != "drain")
-        if step < self._CADENCE_WARN_AFTER_STEP or cost < self._CADENCE_WARN_MIN_COST:
+        self._cadence_samples.append(
+            (sum(v for k, v in phases.items() if k != "drain"), finished - previous)
+        )
+        count = len(self._cadence_samples)
+        cost = sum(sample[0] for sample in self._cadence_samples) / count
+        interval = sum(sample[1] for sample in self._cadence_samples) / count
+        if cost < self._CADENCE_WARN_MIN_COST:
             return
         if interval <= 0 or cost / interval < self._CADENCE_WARN_FRACTION:
             return

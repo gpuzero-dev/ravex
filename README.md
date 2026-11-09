@@ -17,11 +17,14 @@ Ravex is pure Python and needs Python 3.11 or later. It does not depend on
 torch, so that it attaches to whatever build you already have (CUDA, ROCm, CPU)
 instead of pulling another one in.
 
-On Python 3.10 or older, `pip` may not refuse: the first releases, up to 0.0.4,
-said they ran on 3.9, and pip installs one of those instead, which has none of
-what this page describes and fails at `ravex.train_loop`. Check
-`python --version` first; `pip install "ravex>=0.10"` turns that quiet
-downgrade into an error that names the Python version.
+On Python 3.10 or older `pip install ravex` stops with "No matching
+distribution found for ravex": every release that said it ran there is yanked.
+Check `python --version`.
+
+torch's CPU wheels do not bring NumPy, and torch says so on import with a
+`UserWarning: Failed to initialize NumPy`. It is torch's and harmless, and
+`pip install numpy` silences it; with NumPy installed Ravex also restores its
+RNG on a resume.
 
 Its default checkpoint engine is [Moonclip](https://github.com/gpuzero-dev/moonclip),
 installed with `pip install "ravex[moonclip]"`. Moonclip publishes wheels for
@@ -62,6 +65,13 @@ python train.py      # press Ctrl-C after a few lines
 python train.py      # the first line is past where you stopped, not step 200
 ```
 
+Ctrl-C ends in Python's traceback for `KeyboardInterrupt`, as in any script;
+the line just above it says the run was not lost:
+
+```text
+ravex: stopped; step 600 is saved in ./checkpoints, and the same command resumes from it
+```
+
 The checkpoints are in `./checkpoints`; delete it to start over. Ravex says
 two things on stderr, whatever the log level: where the first checkpoint went,
 and, on a restart, the step it came back at:
@@ -76,8 +86,12 @@ ravex: resumed from step 1400 in ./checkpoints; it stops at step 2000 (max_steps
 and it is what makes a resumed run end where the uninterrupted one would have:
 without it, the resumed script runs its own `for epoch in range(100)` from the
 top again, from the step it came back at, and trains more than the run that
-never stopped. For a longer example, see
-[`examples/train_mlp.py`](examples/train_mlp.py).
+never stopped. For longer examples, each of which the test suite stops and
+resumes: [`examples/train_mlp.py`](examples/train_mlp.py), a DataLoader loop;
+[`examples/train_gpt.py`](examples/train_gpt.py), a small GPT with nanoGPT's
+loop, batches drawn with `torch.randint` and no DataLoader; and
+[`examples/train_ddp.py`](examples/train_ddp.py), two processes with DDP on a
+CPU under `torchrun`.
 
 A resumed run continues rather than restarting from a good place, because
 Ravex restores everything around the weights too: optimizer state, LR

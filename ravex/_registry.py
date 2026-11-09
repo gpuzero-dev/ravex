@@ -22,7 +22,7 @@ import logging
 import random
 import weakref
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from ravex._dist.collectives import (
     apply_local_sharded_state,
@@ -123,6 +123,9 @@ class ObjectRegistry:
         self.step_count: int = 0
         self.resumed: bool = False
         self._pending_rng: Optional[Dict[str, Any]] = None
+        #: The RNG as the last counted step left it, with that step, for a
+        #: loop that has no DataLoader: see :meth:`keep_rng_at_step`.
+        self._rng_at_step: Optional[Tuple[int, Dict[str, Any]]] = None
 
         # Strong references to what the last checkpoint saw. See `pin_live`.
         self._pinned: tuple = ()
@@ -590,9 +593,30 @@ class ObjectRegistry:
                 state["dataloaders"][key] = tracked.state()
 
         if track_rng:
-            state["rng"] = self._collect_rng(torch)
+            kept = self._rng_at_step
+            if kept is not None and kept[0] == self.step_count:
+                state["rng"] = kept[1]
+            else:
+                state["rng"] = self._collect_rng(torch)
 
         return state
+
+    def keep_rng_at_step(self) -> None:
+        """Remember the RNG as the step just counted left it (GPU-367).
+
+        A loop with no DataLoader draws its batch at the top of the iteration
+        - ``torch.randint`` over a token stream, as nanoGPT does - and the
+        checkpoint of the step before is taken after that, at the first
+        forward. Collected there, the RNG has already drawn the next batch,
+        and a run resumed from it draws the one after: different batches, and
+        losses that are not the uninterrupted run's. What a checkpoint of
+        step N has to hold is the RNG at the end of step N, which is this.
+        It is used by every checkpoint of the same step, the final one at a
+        stop included, and by none after the next step is counted.
+        """
+        import torch
+
+        self._rng_at_step = (self.step_count, self._collect_rng(torch))
 
     def sharded_layout(self, requested: str) -> str:
         """Settle on one layout for every sharded group in this checkpoint.
@@ -683,6 +707,7 @@ class ObjectRegistry:
         import torch
 
         self.step_count = int(state.get("step", 0))
+        self._rng_at_step = None
 
         saved_models = state.get("models", {})
         unmatched_models = []
