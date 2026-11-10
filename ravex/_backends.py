@@ -100,6 +100,18 @@ class CheckpointBackend(ABC):
         """
         return []
 
+    def known_checkpoints(self) -> List[Dict[str, Any]]:
+        """:meth:`known_steps`, with what a list of them shows: one entry a
+        step, oldest first, as ``{"step", "is_delta", "size_bytes"}``.
+
+        For the platform's checkpoint list (GPU-382). Sending only the steps
+        made the backend store every one as a full of no known size, so a run
+        saving a delta a step and a full every ``checkpoint_every`` read as
+        nothing but fulls. A backend that knows neither answers what is true of
+        it: every checkpoint whole, size not measured here.
+        """
+        return [{"step": step, "is_delta": False, "size_bytes": None} for step in self.known_steps()]
+
     def delta_steps(self) -> List[int]:
         """The steps stored as a delta against an earlier full snapshot.
 
@@ -536,6 +548,29 @@ class MoonclipBackend(CheckpointBackend):
             return []
         steps = {int(s["step"]) for s in snapshots if s.get("step") is not None}
         return sorted(steps)
+
+    def known_checkpoints(self) -> List[Dict[str, Any]]:
+        try:
+            snapshots = self._manager.list_snapshots()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Could not list snapshots: %s", exc)
+            return []
+        # In the order Moonclip lists them, so a step a restarted run wrote
+        # twice ends up described by its last write - the one `load_step`
+        # reads. `total_compressed` is what the snapshot takes in the store,
+        # which is what a size next to a checkpoint is asked about.
+        by_step: Dict[int, Dict[str, Any]] = {}
+        for snapshot in snapshots:
+            if snapshot.get("step") is None:
+                continue
+            step = int(snapshot["step"])
+            size = snapshot.get("total_compressed")
+            by_step[step] = {
+                "step": step,
+                "is_delta": bool(snapshot.get("is_delta")),
+                "size_bytes": int(size) if size is not None else None,
+            }
+        return [by_step[step] for step in sorted(by_step)]
 
     def delta_steps(self) -> List[int]:
         try:

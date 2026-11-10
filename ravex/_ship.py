@@ -128,7 +128,7 @@ class Shipper:
         self.store_uri = store_uri or recorded_store_uri(store) or os.path.abspath(store)
         self._chunks: Deque[str] = deque()
         self._run_dirty = False
-        self._checkpoints: Optional[List[int]] = None
+        self._checkpoints: Optional[List[Dict[str, Any]]] = None
         self._headers: Dict[str, Dict[str, Any]] = {}
         self._condition = threading.Condition()
         self._closing = False
@@ -150,10 +150,24 @@ class Shipper:
                 self._run_dirty = True
             self._condition.notify()
 
-    def checkpoints(self, steps: List[int]) -> None:
-        """The steps the store holds now. Only the latest list is sent."""
+    def checkpoints(self, entries: List[Any]) -> None:
+        """The checkpoints the store holds now. Only the latest list is sent.
+
+        Each entry is what the store's ``known_checkpoints`` gives - a step
+        with whether it is a delta and its size (GPU-382) - or a bare step,
+        which says only that the step is there. One entry a step, the last
+        one given winning: a step a restarted run wrote twice is its last write.
+        """
+        by_step: Dict[int, Dict[str, Any]] = {}
+        for entry in entries:
+            if isinstance(entry, dict):
+                described = dict(entry)
+                described["step"] = int(entry["step"])
+            else:
+                described = {"step": int(entry)}
+            by_step[described["step"]] = described
         with self._condition:
-            self._checkpoints = sorted(int(step) for step in steps)
+            self._checkpoints = [by_step[step] for step in sorted(by_step)]
             self._condition.notify()
 
     @property
@@ -371,12 +385,9 @@ class Shipper:
             {"execution": header, "records": records, "batch": relative},
         )
 
-    def _send_checkpoints(self, steps: List[int]) -> None:
+    def _send_checkpoints(self, entries: List[Dict[str, Any]]) -> None:
         run_id = urllib.parse.quote(self._run_id(), safe="")
-        self._post(
-            "/api/ingest/runs/%s/checkpoints" % run_id,
-            {"checkpoints": [{"step": step} for step in steps]},
-        )
+        self._post("/api/ingest/runs/%s/checkpoints" % run_id, {"checkpoints": entries})
 
     def _post(self, path: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")

@@ -255,6 +255,41 @@ def test_moonclip_keeps_a_window_of_checkpoint_every_steps(tmp_path):
     backend.close()
 
 
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_moonclip_says_which_checkpoints_are_deltas_and_what_each_weighs(tmp_path):
+    """The list the platform shows (GPU-382): the same steps as
+    `known_steps`, each with whether it is a delta and its size in the store.
+    Sending only the steps made every one read as a full of no known size."""
+    from ravex._backends import MoonclipBackend
+
+    backend = MoonclipBackend(
+        make_config(tmp_path, backend="moonclip", checkpoint_every=4, full_every=100)
+    )
+    for step in range(1, 13):
+        backend.save(step, sample_state(step), {"step": str(step)})
+    backend.flush()
+
+    entries = backend.known_checkpoints()
+    assert [entry["step"] for entry in entries] == backend.known_steps()
+    assert [entry["step"] for entry in entries if not entry["is_delta"]] == [1], entries
+    assert all(entry["is_delta"] for entry in entries[1:]), entries
+    assert all(isinstance(entry["size_bytes"], int) and entry["size_bytes"] > 0 for entry in entries), entries
+    backend.close()
+
+
+def test_torch_save_checkpoints_are_whole_and_unmeasured(tmp_path):
+    backend = TorchSaveBackend(make_config(tmp_path, backend="torch_save"))
+    for step in (4, 8):
+        backend.save(step, sample_state(step), {"step": str(step)})
+        backend.flush()
+
+    assert backend.known_checkpoints() == [
+        {"step": 4, "is_delta": False, "size_bytes": None},
+        {"step": 8, "is_delta": False, "size_bytes": None},
+    ]
+    backend.close()
+
+
 # ─── save_dtype reaches Moonclip ────────────────────────────────────
 
 

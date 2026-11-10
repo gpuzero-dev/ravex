@@ -211,8 +211,9 @@ def _rendezvous(args) -> int:
         del server
 
 
-def _held_steps(storage):
-    """The steps a local store holds, read the way the run that wrote it would.
+def _held_checkpoints(storage):
+    """The checkpoints a local store holds, read the way the run that wrote it
+    would: each step with whether it is a delta and its size (GPU-382).
 
     ``None`` when that cannot be said from here: a store in a bucket needs its
     credentials, and a run.json without a config does not say which backend
@@ -235,7 +236,7 @@ def _held_steps(storage):
     try:
         store = get_backend(config)
         try:
-            return store.known_steps()
+            return store.known_checkpoints()
         finally:
             store.close()
     except Exception as exc:
@@ -263,7 +264,7 @@ def _ship(args) -> int:
     # not list as confirmed, and marks the run document for sending, so the
     # final status goes too.
     shipper = Shipper(args.endpoint, args.storage, token=token, recover=True)
-    steps = _held_steps(args.storage)
+    steps = _held_checkpoints(args.storage)
     if steps is not None:
         # The list a resume is picked from. The backend's copy is whatever the
         # run last managed to send, which after retention can name steps the

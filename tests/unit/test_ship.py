@@ -6,6 +6,7 @@ issue's two rules: training never waits for the network, and a backend that
 was unreachable costs nothing once it answers again.
 """
 
+import importlib.util
 import json
 import os
 import threading
@@ -32,6 +33,7 @@ class FakeBackend:
         self.runs = {}
         self.batches = []
         self.checkpoints = {}
+        self.checkpoint_entries = {}
         self.lock = threading.Lock()
         backend = self
 
@@ -64,6 +66,7 @@ class FakeBackend:
                         status = 200
                     else:
                         backend.checkpoints[parts[3]] = [c["step"] for c in body["checkpoints"]]
+                        backend.checkpoint_entries[parts[3]] = body["checkpoints"]
                         status = 200
                 self.send_response(status)
                 self.send_header("Content-Type", "application/json")
@@ -151,8 +154,51 @@ class TestSending:
         assert document["store_uri"] == os.path.abspath(str(storage))
         assert backend.points(run_id, "train/loss") == [1, 2, 3, 4, 5]
         assert backend.checkpoints[run_id] == [2, 4, 5]
+        # torch.save writes every checkpoint whole and does not measure it.
+        assert all(
+            entry["is_delta"] is False and entry["size_bytes"] is None
+            for entry in backend.checkpoint_entries[run_id]
+        )
         # Every chunk written is recorded as confirmed, so a restart resends nothing.
         assert shipped(storage) == written(storage)
+
+    @pytest.mark.skipif(importlib.util.find_spec("moonclip") is None, reason="moonclip not installed")
+    def test_moonclip_checkpoints_arrive_with_kind_and_size(self, storage, backend):
+        # GPU-382: a delta a step and a full every `checkpoint_every`, and the
+        # backend told which is which and how much each takes, instead of a
+        # list of steps it stored as fulls of no known size.
+        @ravex.train_loop(
+            backend="moonclip",
+            checkpoint_every=4,
+            metrics_chunk_every=0,
+            system_metrics_every=0,
+            metrics_endpoint=backend.url,
+        )
+        def train():
+            tiny(6)
+
+        train()
+        run_id = ravex.runs.describe(str(storage))["run_id"]
+        entries = backend.checkpoint_entries[run_id]
+        assert entries, "no checkpoint list reached the backend"
+        assert any(entry["is_delta"] for entry in entries), entries
+        assert any(not entry["is_delta"] for entry in entries), entries
+        assert all(entry["size_bytes"] and entry["size_bytes"] > 0 for entry in entries), entries
+
+    def test_a_step_given_twice_is_its_last_entry(self, tmp_path):
+        shipper = Shipper("http://127.0.0.1:9", str(tmp_path))
+        try:
+            shipper.checkpoints([
+                {"step": 4, "is_delta": True, "size_bytes": 10},
+                3,
+                {"step": 4, "is_delta": False, "size_bytes": 99},
+            ])
+            assert shipper._checkpoints == [
+                {"step": 3},
+                {"step": 4, "is_delta": False, "size_bytes": 99},
+            ]
+        finally:
+            shipper.close(timeout=0)
 
     def test_the_token_never_reaches_the_document(self, storage, backend):
         @ravex.train_loop(

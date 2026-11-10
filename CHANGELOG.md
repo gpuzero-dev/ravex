@@ -36,6 +36,13 @@
 
 ### Fixed
 
+- **The checkpoint list says which steps are deltas and what each weighs
+  (GPU-382).** The list a run sends the platform carried only the steps, so
+  every checkpoint was stored as a full of no known size. Each entry now has
+  `is_delta` and `size_bytes`, read off Moonclip's snapshot list
+  (`total_compressed`); `torch_save` answers what is true of it, whole and not
+  measured. `ravex ship` sends the same. New: `known_checkpoints()` on every
+  storage backend.
 - **A node rejoining over slow rounds got back in (GPU-234).** A join waits
   for the run's round to move, announces two rounds later, and takes the
   state written at the end of that round: about three rounds, whatever

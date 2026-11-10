@@ -1073,7 +1073,7 @@ class RavexRuntime:
         if self._shipper is None or self._backend is None or not is_main_process():
             return
         try:
-            self._shipper.checkpoints(self._backend.known_steps())
+            self._shipper.checkpoints(self._backend.known_checkpoints())
         except Exception as exc:
             logger.debug("Cannot list the checkpoints for the backend: %s", exc)
 
