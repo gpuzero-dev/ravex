@@ -387,6 +387,16 @@ class RavexRuntime:
             logger.debug("Ravex is disabled by configuration")
             return
 
+        if self.config.backend == "moonclip":
+            # Before the try below, which turns any failure into a run that
+            # trains without Ravex: a Moonclip older than the floor stops the
+            # run before its first step instead (GPU-400). The backend is
+            # built only at the first checkpoint, and a refusal there would be
+            # logged and the training would go on with nothing saved.
+            from ravex._backends import check_moonclip_version
+
+            check_moonclip_version()
+
         try:
             from ravex._frameworks import detect_framework, get_adapter
 

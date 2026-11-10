@@ -224,29 +224,64 @@ class CheckpointBackend(ABC):
 _PREFIX = "ravex"
 
 
-#: First Moonclip that accepts `save_dtype` as a mapping, and the first that
-#: knows `fp64`. Below it the argument is a plain string with a shorter
-#: vocabulary.
-_SAVE_DTYPE_SINCE = (0, 0, 9)
+#: The oldest Moonclip this Ravex runs on: the floor ``ravex[moonclip]``
+#: declares in ``pyproject.toml``, and a test keeps the two equal (GPU-400).
+#: 0.3.1 is the first that reads a bucket's keys from its environment, which
+#: Ravex relies on since GPU-267, and 0.3.2 the first that needs none on a
+#: machine with a profile or a role (GPU-309).
+MOONCLIP_FLOOR = (0, 3, 2)
 
 
-def _supports_save_dtype(moonclip) -> bool:
-    """Whether the installed Moonclip understands this `save_dtype`.
+class MoonclipTooOld(RuntimeError):
+    """An installed Moonclip older than :data:`MOONCLIP_FLOOR`.
 
-    An unreadable or unexpected version is taken as *supported*. The floor is
-    declared in `pyproject.toml`, so being here with something older is
-    already unusual; guessing "no" on a version string this cannot parse
-    would silently drop a setting that probably works, which is the failure
-    this function exists to prevent rather than to reproduce.
+    Not a reason to fall back to ``torch_save``, unlike a Moonclip that is
+    not installed at all (GPU-400). The floor is there because something
+    below it misbehaves - an old one refuses a bucket that has no keys in its
+    arguments - and falling back turns that into a run checkpointing somewhere
+    other than asked, with a warning nobody reads. pip enforces the floor only
+    when it installs Ravex, so an environment that kept an older Moonclip, or
+    a source checkout, reaches here without it; this is where it is said.
+    """
+
+
+def _version_of(moonclip) -> Optional[Tuple[int, int, int]]:
+    """The leading ``major.minor.patch`` of Moonclip's ``__version__``.
+
+    Only the leading three numbers, so a development build such as
+    ``0.3.3.dev0`` reads as 0.3.3. None when there are not three to read.
     """
     raw = getattr(moonclip, "__version__", None)
-    if not isinstance(raw, str):
-        return True
-    try:
-        parts = tuple(int(p) for p in raw.split(".")[:3])
-    except ValueError:
-        return True
-    return parts >= _SAVE_DTYPE_SINCE
+    match = re.match(r"(\d+)\.(\d+)\.(\d+)", raw) if isinstance(raw, str) else None
+    if match is None:
+        return None
+    major, minor, patch = (int(part) for part in match.groups())
+    return major, minor, patch
+
+
+def check_moonclip_version(moonclip=None) -> None:
+    """Raise :class:`MoonclipTooOld` when the installed Moonclip is below the floor.
+
+    Nothing when Moonclip is not installed: that is the case the fallback to
+    ``torch_save`` is for. A version that cannot be read is refused as well,
+    since nothing then says the floor is met. ``moonclip`` is the module when
+    the caller has it already.
+    """
+    if moonclip is None:
+        try:
+            import moonclip
+        except ImportError:
+            return
+    found = _version_of(moonclip)
+    if found is not None and found >= MOONCLIP_FLOOR:
+        return
+    floor = ".".join(str(part) for part in MOONCLIP_FLOOR)
+    raise MoonclipTooOld(
+        "Ravex needs Moonclip >= %s and %s is installed. Upgrade it with "
+        "`pip install -U 'moonclip>=%s'`, or uninstall it to checkpoint with "
+        "torch.save instead."
+        % (floor, "version %s" % getattr(moonclip, "__version__", "an unknown version"), floor)
+    )
 
 
 class MoonclipBackend(CheckpointBackend):
@@ -255,6 +290,7 @@ class MoonclipBackend(CheckpointBackend):
     def __init__(self, config):
         import moonclip
 
+        check_moonclip_version(moonclip)
         self._moonclip = moonclip
         storage = config.storage
 
@@ -285,40 +321,10 @@ class MoonclipBackend(CheckpointBackend):
         # Component names became globs on the way out of the config: Moonclip
         # matches names and deliberately does not know what an optimizer is.
         save_dtype = config.resolve_save_dtype()
-        if save_dtype is not None and not _supports_save_dtype(moonclip):
-            # Stated as a version requirement, out loud, rather than left to
-            # be discovered as an exception. Moonclip before 0.0.9 declares
-            # `save_dtype` as a string, so the mapping form arrives as a
-            # `TypeError` — and `get_backend` catches everything, so the run
-            # would lose Moonclip checkpointing *entirely* over one setting,
-            # reported as "Moonclip backend unavailable". One config option,
-            # the whole run downgraded to `torch.save`, and a message that
-            # blames the wrong thing.
-            #
-            # So the narrow thing degrades instead of the broad one: the
-            # option is dropped, checkpointing continues, and the reason names
-            # itself. `fp64` and the per-component form both arrived in 0.0.9,
-            # which is why this covers the setting rather than one spelling of
-            # it — emulating the older vocabulary here would put a copy of
-            # Moonclip's dtype table in the wrong repository.
-            logger.warning(
-                "save_dtype needs Moonclip >= 0.0.9 (installed: %s); storing "
-                "every tensor at the precision it arrives in. Upgrade "
-                "Moonclip to use it — checkpointing is otherwise unaffected.",
-                getattr(moonclip, "__version__", "unknown"),
-            )
-            save_dtype = None
-            # Already told, and told something more useful. Pointing at a
-            # setting they just used would read as if it had been ignored for
-            # no reason.
-            configured = True
-        else:
-            configured = save_dtype is not None
-
         if save_dtype is not None:
             kwargs["save_dtype"] = save_dtype
             logger.info("save_dtype=%s", save_dtype)
-        elif not configured:
+        else:
             # Said once per run, and not as a warning, because nothing is
             # wrong — the default is deliberately "store what arrived". It is
             # here because the setting is worth a great deal and is invisible
@@ -1225,6 +1231,10 @@ def reachable_rank_stores(config, ranks: Iterable[int]) -> "set[int]":
 def get_backend(config, per_rank: bool = False) -> CheckpointBackend:
     """Build the configured backend, falling back to ``torch_save``.
 
+    The fallback is for a Moonclip that is missing or will not start. One
+    that is installed but older than :data:`MOONCLIP_FLOOR` raises
+    :class:`MoonclipTooOld` instead (GPU-400).
+
     A missing or broken Moonclip must never stop a training run: the whole
     proposition is that Ravex is invisible when it works and harmless when
     it does not.
@@ -1240,6 +1250,10 @@ def get_backend(config, per_rank: bool = False) -> CheckpointBackend:
     if name == "moonclip":
         try:
             return MoonclipBackend(config)
+        except MoonclipTooOld:
+            # Installed and too old is not missing (GPU-400): said, not
+            # papered over with torch.save.
+            raise
         except ImportError:
             logger.warning("Moonclip is not installed - falling back to torch.save")
         except Exception as exc:

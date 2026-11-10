@@ -36,6 +36,13 @@
 
 ### Fixed
 
+- **A Moonclip older than 0.3.2 stops the run instead of being used
+  (GPU-400).** pip holds `ravex[moonclip]` to `moonclip>=0.3.2` only when it
+  installs Ravex, so an environment that kept an older Moonclip ran on it, or
+  fell back to `torch.save` when it failed. Now activation raises
+  `MoonclipTooOld`, before the first step, naming both versions and the
+  upgrade command. A Moonclip that is not installed still falls back to
+  `torch.save`. The `save_dtype` probe for Moonclip < 0.0.9 is gone with it.
 - **The checkpoint list says which steps are deltas and what each weighs
   (GPU-382).** The list a run sends the platform carried only the steps, so
   every checkpoint was stored as a full of no known size. Each entry now has
