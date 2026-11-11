@@ -306,15 +306,17 @@ def test_a_run_that_stops_moving_is_not_waited_on_past_its_deadline():
 # ─── a run that lost a starting node (GPU-406) ───────────────────────────
 
 
-def test_still_serving_is_every_member_that_wrote_the_round_before():
-    """The members a joiner entering at round 10 waits for: the ones that
-    wrote the outer parameters down for round 9 or later. One that stopped at
-    round 5 has stopped passing boundaries."""
+def test_still_serving_is_every_member_that_marked_a_round_since_the_announcement():
+    """A joiner that announced when the run was at round 8 waits for the
+    members that marked round 8 or later, freshest first - one that marked
+    only round 9 may have died right after, and is dialled last. One that
+    stopped at round 5 has stopped passing boundaries."""
     store = FakeStore()
     _membership.served(store, 0, 5)
     _membership.served(store, 1, 9)
     _membership.served(store, 2, 10)
-    assert _membership.still_serving(store, [0, 1, 2], 10) == [1, 2]
+    _membership.served(store, 3, 8)
+    assert _membership.still_serving(store, [0, 1, 2, 3], 8) == [2, 1, 3]
 
 
 def test_still_serving_without_a_single_mark_is_every_member():
@@ -366,3 +368,85 @@ def test_a_join_gets_in_when_a_starting_node_has_died():
     finally:
         stop.set()
         members.join(5)
+
+
+class Blinking:
+    """One member's view of the store, which fails every call while ``down``
+    is set: a network blip, not a death."""
+
+    def __init__(self, store):
+        self.store = store
+        self.down = False
+
+    def __getattr__(self, name):
+        method = getattr(self.store, name)
+
+        def call(*args, **kwargs):
+            if self.down:
+                raise ConnectionError("store unreachable")
+            return method(*args, **kwargs)
+
+        return call
+
+
+def test_one_failed_boundary_is_a_retry_not_a_death():
+    """A live member whose store calls all fail at the boundary after the
+    announcement writes neither its acknowledgement nor its mark there.
+    Counted from the boundary before the admit round, that read as death and
+    the joiner published without it. Counted from the round announced from,
+    the member's earlier mark keeps it in, and the joiner asks again instead
+    (GPU-406, review round 1)."""
+    import threading
+
+    store = FakeStore()
+    published = Published()
+    stop = threading.Event()
+    blinking = Blinking(store)
+    stores = [store, blinking]
+    loops = [Loop(5) for _ in range(BASE_WORLD)]
+    members = [
+        _membership.Membership(stores[rank], rank, BASE_WORLD) for rank in range(BASE_WORLD)
+    ]
+    stopped = set()
+    blinked = []
+
+    def run():
+        while not stop.is_set():
+            # Rank 1 loses the store for exactly one boundary: the first one
+            # at which the joiner's announcement is there to be read.
+            announced = store.check([_membership.JOIN_KEY % BASE_WORLD])
+            blinking.down = announced and not blinked
+            if blinking.down:
+                blinked.append(loops[1].round_number)
+            for rank, (loop, member) in enumerate(zip(loops, members)):
+                if rank in stopped:
+                    continue
+                try:
+                    _membership.serve_joins(stores[rank], published, loop, member)
+                except _membership.MembershipError:
+                    # Meeting the announcement late is this member's own stop;
+                    # what is under test is the joiner's side.
+                    stopped.add(rank)
+                except Exception:
+                    pass
+            blinking.down = False
+            stop.wait(0.3)
+            for loop in loops:
+                loop.round_number += 1
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    try:
+        joiner = Joiner()
+        assert _membership.join(
+            store, published, joiner, BASE_WORLD, BASE_WORLD, time.monotonic() + 15
+        )
+    finally:
+        stop.set()
+        thread.join(5)
+    assert blinked, "the blip never happened: the test proves nothing"
+    first = int(store.get(_membership.ACK_KEY % (0, BASE_WORLD)).decode("utf-8"))
+    assert joiner.round_number != first, (
+        "the joiner entered round %d, the round rank 1 never acknowledged "
+        "because of one failed boundary" % first
+    )

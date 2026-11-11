@@ -10,9 +10,12 @@
   never take another - the common case on rented machines, where a preempted
   box is replaced. Each starting node now marks the rounds it writes the
   run's state down for a joiner, and the joiner waits only for those that
-  marked the round before its own. Who is averaged in a round is still
-  decided on the store, so this changes whom a joiner waits for, never which
-  set a round averages.
+  marked a round since the one it announced from: two boundaries, so one
+  failed store call does not read as a death. Who is averaged in a round is
+  still decided on the store, so this changes whom a joiner waits for, never
+  which set a round averages. A run whose starting nodes have *all* gone
+  still cannot take a new node: only starting nodes serve a joiner the run's
+  state.
 
 ## 0.12.0 — 2026-11-10
 
