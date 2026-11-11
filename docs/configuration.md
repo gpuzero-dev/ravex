@@ -1318,6 +1318,14 @@ and one that has stopped marking them has stopped training. The joiner takes
 the outer parameters and the momentum from the nodes still there, and
 contributes from the round it announced, like any other join.
 
+What still cannot happen is a join into a run whose starting nodes have all
+gone. Only starting nodes give a joiner the run's state and acknowledge it,
+and a node that joined later does neither, so a joiner then waits until its
+`outer_deadline` and gives up. On preemptible machines a long run drifts
+towards this, one replaced box at a time. A relaunch of every node, resumed
+from their checkpoints, makes the nodes it starts with the starting nodes
+again.
+
 **`RAVEX_EXCHANGE_ADDRESS` is required whenever the nodes are not on one
 network.** Behind NAT, nothing a process can ask its own kernel returns the
 address a peer dials. Set it to the address peers should reach this node at,

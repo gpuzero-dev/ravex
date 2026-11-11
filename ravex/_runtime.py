@@ -1418,7 +1418,9 @@ class RavexRuntime:
             ):
                 raise RuntimeError(
                     "could not join the run within %ds. Nothing was published, "
-                    "so the members closed their rounds without this node"
+                    "so the members closed their rounds without this node. "
+                    "A run whose starting nodes have all gone cannot take a "
+                    "new one: only they serve the run's state to a joiner"
                     % self.config.outer_deadline
                 )
             self._membership.take_in_joined()
