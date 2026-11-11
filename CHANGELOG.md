@@ -10,8 +10,11 @@
   never take another - the common case on rented machines, where a preempted
   box is replaced. Each starting node now marks the rounds it writes the
   run's state down for a joiner, and the joiner waits only for those that
-  marked a round since the one it announced from: two boundaries, so one
-  failed store call does not read as a death. Who is averaged in a round is
+  marked a round since the one it announced from: two boundaries, so a live
+  member that missed one boundary is waited for and the joiner does not
+  publish without its acknowledgement. A member that misses the one boundary
+  at which it could take the announcement in still leaves and rejoins, as
+  before: a safe departure, not two models. Who is averaged in a round is
   still decided on the store, so this changes whom a joiner waits for, never
   which set a round averages. A run whose starting nodes have *all* gone
   still cannot take a new node: only starting nodes serve a joiner the run's

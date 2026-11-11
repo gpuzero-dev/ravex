@@ -117,15 +117,22 @@ ACK_KEY = "ravex/gpu121/ack/%d/%d"
 #: of every base member whose mark is at least the round it announced *from*
 #: - two boundaries before the one it enters at - and for no other.
 #:
-#: **Two boundaries, not one, so that a blip is not a death.** A member whose
-#: store calls fail at one boundary writes neither its acknowledgement nor its
-#: mark there. Counted from the boundary just before the admit round, that
-#: one failure read as death: the joiner published without the member's
-#: acknowledgement and the member, meeting the announcement late, stopped.
-#: Counted from the round announced from, a live member is left out only if it
-#: missed every boundary in between, and one that missed some is waited for,
-#: which costs the joiner a retry - the protocol's ordinary price, and the
-#: only one it paid before this key existed.
+#: **Two boundaries, not one, so that a blip does not let the joiner go
+#: ahead.** A member whose store calls fail at one boundary writes neither its
+#: acknowledgement nor its mark there. Counted from the boundary just before
+#: the admit round, that one failure read as death, and the joiner published
+#: without the live member's acknowledgement. Counted from the round
+#: announced from, a live member is left out only if it missed every boundary
+#: in between, and one that missed some is waited for: the joiner asks again
+#: for a later round, the protocol's ordinary price.
+#:
+#: **What it does not save is the member.** With :data:`JOIN_MARGIN` at two,
+#: the boundary just before the admit round is the only one at which a member
+#: can take an announcement in time; one whose store reads fail there meets
+#: it at the admit round, and :meth:`Membership.refresh` raises
+#: :class:`MembershipError`. It leaves and rejoins, as it did before this key
+#: existed. That is a departure, which is safe - the round's set is decided on
+#: the store - and not two models.
 #:
 #: **Why this does not make two nodes disagree about a round.** Who is
 #: averaged in a round is not decided here at all since GPU-140: it is the set

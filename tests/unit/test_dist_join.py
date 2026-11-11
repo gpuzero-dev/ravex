@@ -15,6 +15,7 @@ blocks inside ``close_round`` until its peers publish, so driving them in
 sequence would be testing a shape the real thing never has.
 """
 
+import threading
 import time
 
 import pytest
@@ -266,8 +267,6 @@ def test_a_join_over_rounds_longer_than_its_deadline_still_gets_in():
     one - about three rounds, twice the deadline. It used to give up every
     time; it now waits the rounds the run is measured to take. The ratio,
     not the speed of the machine, is what the test holds."""
-    import threading
-
     store = FakeStore()
     published = Published()
     stop = threading.Event()
@@ -288,8 +287,6 @@ def test_a_run_that_stops_moving_is_not_waited_on_past_its_deadline():
     """The rounds measured while the run moved are no reason to wait once it
     has stopped: a run whose round never reaches the one announced ends the
     join at the deadline, plus at most the rounds one join takes."""
-    import threading
-
     store = FakeStore()
     published = Published()
     stop = threading.Event()
@@ -348,8 +345,6 @@ def test_a_join_gets_in_when_a_starting_node_has_died():
     """Rank 0 is gone without a word - no `leave` - and rank 1 carries on.
     The joiner waits for rank 1's acknowledgement alone, and gets in; it used
     to wait for rank 0's until its deadline, every time (GPU-406)."""
-    import threading
-
     store = FakeStore()
     published = Published()
     stop = threading.Event()
@@ -396,8 +391,6 @@ def test_one_failed_boundary_is_a_retry_not_a_death():
     the joiner published without it. Counted from the round announced from,
     the member's earlier mark keeps it in, and the joiner asks again instead
     (GPU-406, review round 1)."""
-    import threading
-
     store = FakeStore()
     published = Published()
     stop = threading.Event()
