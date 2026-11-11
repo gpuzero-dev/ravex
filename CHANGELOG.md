@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A run that lost a starting node takes a new one (GPU-406).** A joiner
+  waited for the acknowledgement of every starting node, and one that died
+  without a word never gave it, so a run that had lost a starting node could
+  never take another - the common case on rented machines, where a preempted
+  box is replaced. Each starting node now marks the rounds it writes the
+  run's state down for a joiner, and the joiner waits only for those that
+  marked the round before its own. Who is averaged in a round is still
+  decided on the store, so this changes whom a joiner waits for, never which
+  set a round averages.
+
 ## 0.12.0 — 2026-11-10
 
 ### Added

@@ -1306,11 +1306,17 @@ nodes with the server on one of them cannot carry on when that node dies: the
 survivor is one of two, not more than half. A node started later is given the same list and finds the run where
 it is now.
 
-Two more limits. Without that list the server is a single point,
+One more limit: without that list the server is a single point,
 and restarting it loses the job's state — though a small process is easier to
-keep alive than a spot GPU. And a run that has lost one of its starting nodes
-cannot take a new one yet: a joiner waits for every starting node to
-acknowledge it, and a dead one never will.
+keep alive than a spot GPU.
+
+A run that has lost one of its starting nodes takes a new one in its place:
+the joiner waits for the acknowledgement of the starting nodes still in the
+run, and a node that died without a word is not among them (GPU-406). Each
+starting node marks the rounds it writes the run's state down for a joiner,
+and one that has stopped marking them has stopped training. The joiner takes
+the outer parameters and the momentum from the nodes still there, and
+contributes from the round it announced, like any other join.
 
 **`RAVEX_EXCHANGE_ADDRESS` is required whenever the nodes are not on one
 network.** Behind NAT, nothing a process can ask its own kernel returns the

@@ -297,6 +297,15 @@ def a_node(address, job, min_nodes, root, name, role, queue, control_at=None,
                     die_after_serving_one(runtime._exchange, 3)
                     armed = True
                 if (
+                    role == "starter-dies"
+                    and runtime._membership.rank == 0
+                    and outer.round_number == 3
+                ):
+                    # A starting node preempted: SIGKILL, so nothing it would
+                    # say on the way out - no `leave`, no final round - is
+                    # said (GPU-406).
+                    os.kill(os.getpid(), 9)
+                if (
                     role == "server-dies"
                     and kill is not None
                     and outer.round_number == 3
@@ -496,6 +505,91 @@ def test_the_first_node_dying_does_not_take_the_run_with_it(server, tmp_path, ov
         assert last == 8, "node %s stopped at round %s" % (name, last)
         assert rounds_over(said, 3), "node %s never had all three nodes" % name
         assert rounds_over(said, 2), "node %s never closed a round without node 0" % name
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="spawn is slow on macOS")
+def test_a_run_that_lost_a_starting_node_takes_a_new_one(server, tmp_path):
+    """GPU-406: the common case on rented machines - one box is preempted and
+    another is started in its place.
+
+    Three nodes start the run and the first of them is killed at round 3,
+    without a word. A fourth is started once it is gone, and has to get in:
+    it used to wait for the dead node's acknowledgement until its deadline,
+    and the run could never grow again. The two survivors and the newcomer
+    must then end on one model, which is what says the newcomer took the
+    outer parameters and the momentum the survivors hold.
+    """
+    pytest.importorskip("moonclip")
+    context = mp.get_context("spawn")
+    queue = context.Queue()
+    job = "replaced"
+    nodes = [
+        context.Process(
+            target=a_node, args=(server, job, 3, str(tmp_path), name, "starter-dies", queue)
+        )
+        for name in ("a", "b", "c")
+    ]
+    for node in nodes:
+        node.start()
+    joiner = None
+    try:
+        # The newcomer starts only once the starting node is gone: started
+        # before, it would be taken in by all three, which is GPU-121's case.
+        deadline = time.monotonic() + 240
+        while all(node.is_alive() for node in nodes):
+            assert time.monotonic() < deadline, "no starting node ever died"
+            time.sleep(0.2)
+        dead = [node for node in nodes if not node.is_alive()]
+        assert len(dead) == 1 and dead[0].exitcode == -9, [
+            (node.name, node.exitcode) for node in nodes
+        ]
+        joiner = context.Process(
+            target=a_node, args=(server, job, 3, str(tmp_path), "d", "joiner", queue)
+        )
+        joiner.start()
+        results = collect(queue, 3, str(tmp_path), "abcd")
+    finally:
+        end_nodes(nodes + ([joiner] if joiner else []))
+
+    assert "d" in results and len(results) == 3, sorted(results)
+    digests = {name: digest for name, (digest, _, _) in results.items()}
+    assert len(set(digests.values())) == 1, (
+        "the nodes ended holding different models: %s (at rounds %s)"
+        % (digests, {name: last for name, (_, last, _) in results.items()})
+    )
+    lasts = {name: last for name, (_, last, _) in results.items()}
+    assert len(set(lasts.values())) == 1, lasts
+    import re
+
+    joined = [
+        int(found.group(1))
+        for line in results["d"][2]
+        for found in [re.search(r"Joined the run at round (\d+)", line)]
+        if found
+    ]
+    assert joined, results["d"][2]
+
+    def rounds_closed_over(said, nodes):
+        return {
+            int(found.group(1))
+            for line in rounds_over(said, nodes)
+            for found in [re.search(r"Outer round (\d+)", line)]
+            if found
+        }
+
+    for name, (_, _, said) in results.items():
+        # Three from the admit round on: the two survivors and the newcomer,
+        # in the same rounds on all of them.
+        assert {r for r in rounds_closed_over(said, 3) if r >= joined[0]}, (
+            "node %s never closed a round with the newcomer" % name
+        )
+    for name in results:
+        if name != "d":
+            # And two in between, which is the run carrying on without the
+            # dead node before anyone took its place.
+            assert rounds_closed_over(results[name][2], 2), (
+                "node %s never closed a round without the dead node" % name
+            )
 
 
 @pytest.mark.skipif(sys.platform == "darwin", reason="spawn is slow on macOS")

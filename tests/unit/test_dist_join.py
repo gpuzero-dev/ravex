@@ -246,11 +246,12 @@ class Joiner(Loop):
         self.written_back = True
 
 
-def _members_at_a_pace(store, published, seconds, stop):
-    """Two members closing a round every ``seconds``: what the joiner sees
-    of a run is its round on the store, which moves only at a boundary."""
-    loops = [Loop(5) for _ in range(BASE_WORLD)]
-    members = [_membership.Membership(store, rank, BASE_WORLD) for rank in range(BASE_WORLD)]
+def _members_at_a_pace(store, published, seconds, stop, ranks=range(BASE_WORLD)):
+    """Members closing a round every ``seconds`` - by default every base
+    rank: what the joiner sees of a run is its round on the store, which
+    moves only at a boundary."""
+    loops = [Loop(5) for _ in ranks]
+    members = [_membership.Membership(store, rank, BASE_WORLD) for rank in ranks]
     while not stop.is_set():
         for loop, member in zip(loops, members):
             _membership.serve_joins(store, published, loop, member)
@@ -300,3 +301,68 @@ def test_a_run_that_stops_moving_is_not_waited_on_past_its_deadline():
     waited = time.monotonic() - began
     assert waited < 1.0 + (_membership.JOIN_MARGIN + 2) * 0.2 + 1.0
     members.join(5)
+
+
+# ─── a run that lost a starting node (GPU-406) ───────────────────────────
+
+
+def test_still_serving_is_every_member_that_wrote_the_round_before():
+    """The members a joiner entering at round 10 waits for: the ones that
+    wrote the outer parameters down for round 9 or later. One that stopped at
+    round 5 has stopped passing boundaries."""
+    store = FakeStore()
+    _membership.served(store, 0, 5)
+    _membership.served(store, 1, 9)
+    _membership.served(store, 2, 10)
+    assert _membership.still_serving(store, [0, 1, 2], 10) == [1, 2]
+
+
+def test_still_serving_without_a_single_mark_is_every_member():
+    """Members older than GPU-406 write no mark; a joiner then waits for all
+    of them, as it did before, rather than deciding they are all gone."""
+    assert _membership.still_serving(FakeStore(), [0, 1], 10) == [0, 1]
+
+
+def test_a_member_that_serves_marks_the_round_before_writing_it():
+    """A joiner reads the round, then who served it: the mark is on the store
+    first, or the member that wrote the round could read as dead."""
+    store = FakeStore()
+    member = _membership.Membership(store, 1, BASE_WORLD)
+    _membership.want_in(store, BASE_WORLD)
+    seen = []
+    real_set = store.set
+
+    def watching(key, value):
+        if key == _membership.STATE_AT_KEY:
+            seen.append(_membership.still_serving(store, [0, 1], 7))
+        real_set(key, value)
+
+    store.set = watching
+    _membership.serve_joins(store, Exchange(), Loop(7), member)
+    assert seen == [[1]], seen
+
+
+def test_a_join_gets_in_when_a_starting_node_has_died():
+    """Rank 0 is gone without a word - no `leave` - and rank 1 carries on.
+    The joiner waits for rank 1's acknowledgement alone, and gets in; it used
+    to wait for rank 0's until its deadline, every time (GPU-406)."""
+    import threading
+
+    store = FakeStore()
+    published = Published()
+    stop = threading.Event()
+    members = threading.Thread(
+        target=_members_at_a_pace, args=(store, published, 0.1, stop),
+        kwargs=dict(ranks=[1]), daemon=True,
+    )
+    members.start()
+    try:
+        joiner = Joiner()
+        assert _membership.join(
+            store, published, joiner, BASE_WORLD, BASE_WORLD, time.monotonic() + 10
+        )
+        assert joiner.written_back
+        assert not store.check([_membership.ACK_KEY % (0, BASE_WORLD)])
+    finally:
+        stop.set()
+        members.join(5)
