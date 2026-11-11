@@ -1,0 +1,24 @@
+{
+  "name": "phase (b): 2 regions x 2 nodes, R, T and C concurrently, join at 360, kill at 750",
+  "results": "results/phase-b",
+  "bench": "/workspace/ravex/bench/vs_torchft",
+  "deepseek": "/workspace/deepseek-1b",
+  "data": "/workspace/data",
+  "train_args": ["--config", "configs/1b.json", "--steps", "1200", "--inner-steps", "250",
+                 "--batch", "4", "--accum", "4", "--seq", "1024", "--eval-batches", "32"],
+  "provision_seconds": 0,
+  "on_kill": "echo terminate {host} through the provider here",
+  "arms": [
+    {"name": "ravex", "kind": "ravex", "nodes": ["r-eu0", "r-eu1", "r-us0", "r-us1"], "port": 29400},
+    {"name": "torchft", "kind": "torchft", "nodes": ["t-eu0", "t-eu1", "t-us0", "t-us1"], "port": 29510,
+     "env": {"TORCHFT_TIMEOUT_SEC": "900", "TORCHFT_QUORUM_TIMEOUT_SEC": "1800"}},
+    {"name": "ckpt", "kind": "ckpt_restart", "nodes": ["c-eu0", "c-eu1", "c-us0", "c-us1"], "port": 29401}
+  ],
+  "faults": [
+    {"arm": "ravex", "action": "join", "at_step": 360, "host": "r-join"},
+    {"arm": "torchft", "action": "join", "at_step": 360, "host": "t-join"},
+    {"arm": "ravex", "action": "kill", "at_step": 750, "node": 3},
+    {"arm": "torchft", "action": "kill", "at_step": 750, "node": 3},
+    {"arm": "ckpt", "action": "kill", "at_step": 750, "node": 3, "host": "c-replacement"}
+  ]
+}

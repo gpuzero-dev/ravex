@@ -1,0 +1,8 @@
+{
+  "hosts": [
+    {"name": "pod0", "ssh": "root@203.0.113.10 -p 40100 -i ~/.ssh/bench", "address": "10.65.0.10",
+     "region": "", "workdir": "/workspace", "python": "/workspace/venv/bin/python"},
+    {"name": "pod1", "ssh": "root@203.0.113.11 -p 40101 -i ~/.ssh/bench", "address": "10.65.0.11",
+     "region": "", "workdir": "/workspace", "python": "/workspace/venv/bin/python"}
+  ]
+}

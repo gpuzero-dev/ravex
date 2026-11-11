@@ -1,0 +1,18 @@
+# The CPU container the harness's tests run in: Linux, as the nodes are, with
+# torch's CPU wheel, torchft's Linux wheel, Moonclip and Ravex's other
+# dependencies. Multi-process tests are judged here, never on Windows, where
+# orphaned children and a TCPStore without libuv make noise look like defects.
+#
+#   docker build -t ravex-bench-cpu -f bench/vs_torchft/Dockerfile.cpu bench/vs_torchft
+#   docker run --rm --init -e MOONCLIP_FSYNC=0 -v <ravex>:/mnt/ravex:ro \
+#       -v <deepseek-1b>:/mnt/deepseek-1b:ro ravex-bench-cpu
+#
+# The checkouts are mounted read-only and copied in, so a test run writes
+# nothing into them; the copy leaves out virtual environments and data, which
+# on a Windows host are large and of no use on Linux.
+FROM python:3.12-bookworm
+RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
+        --extra-index-url https://pypi.org/simple "torch==2.15.0" \
+ && pip install --no-cache-dir "torchft==0.3.1" "moonclip>=0.3.2" numpy PyYAML pytest hatchling
+COPY tests/entry.sh /entry.sh
+ENTRYPOINT ["sh", "/entry.sh"]

@@ -1,0 +1,28 @@
+# The Ravex arm of the primary comparison (plan, section 3).
+#
+# H, the outer learning rate and the outer momentum are not here: train_ravex.py
+# passes them from its command line, the same flags train_torchft.py takes, so
+# the two arms cannot drift apart by editing one file. What is here is what only
+# Ravex has a setting for, at the value the comparison needs.
+backend: moonclip
+# A delta at every step, Ravex's default. Its cost is inside the arm's tokens/s;
+# the plan's extra row with `delta: false` separates it.
+#
+# Mind the disk: the store keeps a window of `checkpoint_every` deltas, and with
+# Adam a delta is close to a full (docs/configuration.md, "A delta at every
+# step"). For deepseek-1b in fp32 a full is about 11 GB, so the window is about
+# 11 GB per step of `checkpoint_every`, plus its full: 10 here, about 120 GB.
+# Measure the size of one delta in phase (a) before sizing the machines' disks
+# for (b).
+delta: true
+checkpoint_every: 10
+# fp32 on the wire, as torchft allreduces in the parameters' dtype.
+outer_save_dtype: null
+# Blocking rounds and a fixed H: torchft's DiLoCo with one fragment does the same.
+outer_overlap: false
+outer_combine: mean
+# Long enough for an fp32 round of deepseek-1b across the ocean (3.76 GB at
+# 7-12 MB/s is 5-9 minutes); a round that runs out of it closes over whoever
+# answered, which is the behaviour being measured.
+outer_deadline: 1200
+metrics_every: 10

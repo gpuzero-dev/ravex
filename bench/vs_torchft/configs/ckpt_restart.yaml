@@ -1,0 +1,20 @@
+# The checkpoint-restart reference, arm C (plan, section 3): the same outer
+# loop as the Ravex arm, but its faults are handled the classical way. The
+# controller stops every node on a kill and starts them all again, each
+# resuming from its own last checkpoint. The outer loop is the primary arm's;
+# what makes the arm is the controller's policy, and the fixed membership
+# (RAVEX_OUTER_MIN_NODES is every starting node).
+#
+# It checkpoints as a classical job does, a full every so many steps, so a
+# restart loses the steps since the last one: that loss is part of what the
+# arm measures. A delta at every step would make it lose almost nothing, which
+# is Ravex's feature, not the classical baseline's.
+backend: moonclip
+delta: false
+checkpoint_every: 100
+keep_last: 2
+outer_save_dtype: null
+outer_overlap: false
+outer_combine: mean
+outer_deadline: 1200
+metrics_every: 10

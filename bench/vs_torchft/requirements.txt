@@ -1,0 +1,9 @@
+# What the benchmark needs beside Ravex itself, which is installed from the
+# same checkout as this folder so the code that ran is the code in the
+# repository at that commit. torchft is a benchmark dependency only, never one
+# of the ravex package. torch comes from the machine's image (>= 2.7, what
+# torchft 0.3.1 asks for).
+torchft==0.3.1
+moonclip>=0.3.2
+numpy
+PyYAML

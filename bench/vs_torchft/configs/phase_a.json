@@ -1,0 +1,49 @@
+{
+  "name": "phase (a), a2 shrunk to fit $3.50: two pods in one data center, the two systems one after the other on them",
+  "results": "results/phase-a",
+  "bench": "/workspace/ravex/bench/vs_torchft",
+  "deepseek": "/workspace/deepseek-1b",
+  "data": "/workspace/data",
+  "train_args": [
+    "--config",
+    "configs/1b.json",
+    "--steps",
+    "300",
+    "--inner-steps",
+    "100",
+    "--batch",
+    "4",
+    "--accum",
+    "4",
+    "--seq",
+    "1024",
+    "--eval-batches",
+    "32"
+  ],
+  "arms": [
+    {
+      "name": "ravex",
+      "kind": "ravex",
+      "nodes": [
+        "pod0",
+        "pod1"
+      ],
+      "port": 29400,
+      "ravex_config": "configs/ravex_phase_a.yaml"
+    },
+    {
+      "name": "torchft",
+      "kind": "torchft",
+      "nodes": [
+        "pod0",
+        "pod1"
+      ],
+      "port": 29510,
+      "env": {
+        "TORCHFT_TIMEOUT_SEC": "900",
+        "TORCHFT_QUORUM_TIMEOUT_SEC": "1800"
+      }
+    }
+  ],
+  "faults": []
+}

@@ -1,0 +1,9 @@
+# The primary arm's settings with a deadline a CPU test can wait out: a node
+# killed by the fault test leaves its peers waiting this long for its report.
+backend: moonclip
+delta: true
+outer_save_dtype: null
+outer_overlap: false
+outer_combine: mean
+outer_deadline: 60
+metrics_every: 10
