@@ -8,6 +8,7 @@ and the helpers both halves use, are in tests/unit/test_outer_rendezvous.py.
 import hashlib
 import multiprocessing as mp
 import os
+import re
 import sys
 import threading
 import time
@@ -559,8 +560,6 @@ def test_a_run_that_lost_a_starting_node_takes_a_new_one(server, tmp_path):
     )
     lasts = {name: last for name, (_, last, _) in results.items()}
     assert len(set(lasts.values())) == 1, lasts
-    import re
-
     joined = [
         int(found.group(1))
         for line in results["d"][2]
@@ -578,10 +577,12 @@ def test_a_run_that_lost_a_starting_node_takes_a_new_one(server, tmp_path):
         }
 
     for name, (_, _, said) in results.items():
-        # Three from the admit round on: the two survivors and the newcomer,
-        # in the same rounds on all of them.
-        assert {r for r in rounds_closed_over(said, 3) if r >= joined[0]}, (
-            "node %s never closed a round with the newcomer" % name
+        # Three in the admit round itself, on all of them: the two survivors
+        # counted the newcomer from exactly the round it announced, and it
+        # contributed to that round, not one either side of it.
+        assert joined[0] in rounds_closed_over(said, 3), (
+            "node %s did not close round %d, the newcomer's first, over three "
+            "nodes: %s" % (name, joined[0], sorted(rounds_closed_over(said, 3)))
         )
     for name in results:
         if name != "d":
@@ -684,8 +685,6 @@ def stop_servers_on(ports):
 
 
 def hosted_pids(said):
-    import re
-
     return [
         int(found.group(1))
         for line in said
