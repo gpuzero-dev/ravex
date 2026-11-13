@@ -18,8 +18,10 @@ on:
         type: string
         required: true
 
-# The job token only reads: nothing here pushes, tags or comments, and releases
-# go out with their own PyPI token.
+# The job token only reads: nothing here pushes, tags or comments. The
+# publish job also asks for an OIDC token, which PyPI trades for a publish
+# token that expires on its own (trusted publishing, GPU-412): no PyPI token is
+# stored anywhere.
 permissions:
   contents: read
 
@@ -36,6 +38,13 @@ env:
 # platform, free-threaded 3.14 included, and the sdist builds anywhere.
 jobs:
   publish:
+    # Publishes, so it runs in `production` (open to main, deploy and v* tags
+    # only) and may ask GitHub for an OIDC token, which the index trades for
+    # a short-lived publish token (GPU-412).
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
     runs-on: ubuntu-latest
     container:
       image: python:3.12-bookworm
@@ -87,18 +96,14 @@ jobs:
             exit 1
           fi
 
-      - name: The publish token must be present
-        env:
-          PYPI_TOKEN: ${{ secrets.RAVEX_PYPI_TOKEN }}
+      # Before the build, and on a rehearsal too: a manual run is how trusted
+      # publishing is shown to still work without spending a version.
+      - name: PyPI must trust this workflow
         run: |
           set -eu
-          if [ -z "${PYPI_TOKEN:-}" ]; then
-            echo "RAVEX_PYPI_TOKEN is not set: a tag was pushed but nothing" >&2
-            echo "would reach PyPI. Add the secret on the repository, delete the" >&2
-            echo "tag and push it again." >&2
-            exit 1
-          fi
-          echo "token present"
+          TOKEN=$(sh .github/scripts/trusted-token.sh pypi)
+          echo "::add-mask::$TOKEN"
+          echo "PyPI issues a token to this workflow"
 
       - name: Build the sdist and the wheel
         run: |
@@ -125,9 +130,13 @@ jobs:
         if: ${{ github.event_name == 'push' }}
         env:
           TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.RAVEX_PYPI_TOKEN }}
         run: |
           set -eu
+          # Trusted publishing (GPU-412): a token minted for this job, not a
+          # stored secret. Masked before anything could print it.
+          TWINE_PASSWORD=$(sh .github/scripts/trusted-token.sh pypi)
+          echo "::add-mask::$TWINE_PASSWORD"
+          export TWINE_PASSWORD
           # `--skip-existing` so a re-run is harmless. Without it, uploading a
           # file PyPI already holds is a 400 whose body twine reports as just
           # "Bad Request" - which is how this pipeline's first run ever ended,
