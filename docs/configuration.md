@@ -410,6 +410,15 @@ says so once, in a warning with both sizes. A resume from then on starts from
 the last full, and weighs its first deltas again. Below 64 MiB a full is
 small enough that its write at every step costs nothing worth that trade.
 
+**When the link does not keep up, the run saves fulls too.** A delta can be
+light and still more than the link to the bucket takes: 19 MB a step at
+fourteen steps a second is 270 MB/s, and R2 from a rented node takes a few
+tens. Moonclip says which step the bucket last had whole; at every checkpoint
+Ravex compares it with the step being saved, and a bucket more than two
+windows behind at two checkpoints in a row moves the run to fulls, with a
+warning that says how far behind it was. A full every `checkpoint_every`
+steps moves the state once a window instead of once a step.
+
 ### The write path
 
 Two options change what a checkpoint costs, and both default to the fast side.

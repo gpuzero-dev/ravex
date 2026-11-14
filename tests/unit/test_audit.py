@@ -192,8 +192,11 @@ class TestMoonclipBackendFingerprint:
         from ravex._backends import MoonclipBackend
 
         backend = MoonclipBackend.__new__(MoonclipBackend)
-        # Its deltas already weighed (GPU-418): these are about fingerprints.
+        # Its deltas already weighed and its link not in question (GPU-418):
+        # these are about fingerprints.
         backend._weighed = True
+        backend.saves_every_step = False
+        backend._first_step = None
         backend._moonclip = SimpleNamespace(__version__="0.1.0")
         backend._manager = SimpleNamespace(
             list_snapshots=lambda: snapshots,
@@ -256,8 +259,11 @@ class TestMoonclipBackendFingerprint:
             return {"tensors": [described("w", snapshot_id)]}
 
         backend = MoonclipBackend.__new__(MoonclipBackend)
-        # Its deltas already weighed (GPU-418): these are about fingerprints.
+        # Its deltas already weighed and its link not in question (GPU-418):
+        # these are about fingerprints.
         backend._weighed = True
+        backend.saves_every_step = False
+        backend._first_step = None
         backend._moonclip = SimpleNamespace(
             __version__="0.1.1", flatten_state_dict=lambda state, prefix, as_tensors: ({}, None)
         )
@@ -285,8 +291,11 @@ class TestMoonclipBackendFingerprint:
 
         described_ids = []
         backend = MoonclipBackend.__new__(MoonclipBackend)
-        # Its deltas already weighed (GPU-418): these are about fingerprints.
+        # Its deltas already weighed and its link not in question (GPU-418):
+        # these are about fingerprints.
         backend._weighed = True
+        backend.saves_every_step = False
+        backend._first_step = None
         backend._moonclip = SimpleNamespace(
             flatten_state_dict=lambda state, prefix, as_tensors: ({}, None)
         )

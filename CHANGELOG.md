@@ -23,13 +23,17 @@
   weighs the first two deltas against the full they stand on; when a full is
   64 MiB or more and a delta half of one or more, the run goes on with a full
   every `checkpoint_every` steps, `keep_last` of them, as with `delta: false`,
-  and says so once. A resume then starts from the last full. Needs Moonclip
-  0.3.3, which keeps a store it opens again by the new retention.
+  and says so once. A resume then starts from the last full. The same happens
+  when the deltas are light but the link is not: a bucket more than two
+  windows behind the saves at two checkpoints in a row means the syncs cannot
+  keep up, and fulls move a window's state once a window instead of once a
+  step. Needs Moonclip 0.3.5, which keeps a store it opens again by the new
+  retention and says which step the bucket last had whole.
 
 ### Fixed
 
-- **Needs Moonclip 0.3.4, whose sync always leaves the bucket a checkpoint
-  (GPU-422).** With a delta at every step and a bucket slower than the saves,
+- **Needs Moonclip 0.3.4 or later, whose sync always leaves the bucket a
+  checkpoint (GPU-422).** With a delta at every step and a bucket slower than the saves,
   a node preempted after seventeen minutes left no checkpoint in its bucket,
   and its resume started from nothing. Moonclip 0.3.4 puts the newest point up
   first and never deletes what the bucket's manifest names.

@@ -460,7 +460,7 @@ class TestMoonclipFloor:
         assert tuple(int(part) for part in declared.groups()) == MOONCLIP_FLOOR
 
     @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-    @pytest.mark.parametrize("version", ["0.1.2", "0.3.3", "garbage", None])
+    @pytest.mark.parametrize("version", ["0.1.2", "0.3.4", "garbage", None])
     def test_an_old_or_unreadable_moonclip_is_refused_not_replaced(self, tmp_path, monkeypatch, version):
         from ravex._backends import MoonclipTooOld
 
@@ -469,7 +469,7 @@ class TestMoonclipFloor:
             get_backend(make_config(tmp_path, backend="moonclip"))
 
     @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-    @pytest.mark.parametrize("version", ["0.3.4", "0.3.5.dev0", "1.0.0"])
+    @pytest.mark.parametrize("version", ["0.3.5", "0.3.6.dev0", "1.0.0"])
     def test_the_floor_or_later_is_used(self, tmp_path, monkeypatch, version):
         self._claiming(monkeypatch, version)
         backend = get_backend(make_config(tmp_path, backend="moonclip"))
@@ -655,3 +655,76 @@ def test_a_run_whose_deltas_are_not_worth_it_saves_a_full_every_checkpoint(tmp_p
     kept = reader.known_checkpoints()
     reader.close()
     assert [(entry["step"], entry["is_delta"]) for entry in kept] == [(15, False), (20, False)]
+
+
+# ─── whether the link keeps up with a delta at every step (GPU-418) ──
+
+
+class _Manager:
+    """A Moonclip manager as `_check_the_link` sees it: the bucket's newest
+    step, read from a list the test moves."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+
+    def remote_step(self):
+        return self.answers.pop(0) if self.answers else None
+
+    def flush(self):
+        pass
+
+
+def _linked_backend(tmp_path, answers, remote=True):
+    from types import SimpleNamespace
+
+    from ravex._backends import MoonclipBackend
+
+    config = make_config(tmp_path, backend="moonclip", checkpoint_every=100, keep_last=2)
+    if remote:
+        config.storage.type = "s3"
+        config.storage.bucket = "runs"
+    backend = MoonclipBackend.__new__(MoonclipBackend)
+    backend._config = config
+    backend._common = {"storage_root": str(tmp_path)}
+    backend._manager = _Manager(answers)
+    opened = []
+    backend._moonclip = SimpleNamespace(MoonclipManager=lambda **kwargs: opened.append(kwargs) or _Manager([]))
+    backend.saves_every_step = True
+    backend._weighed = True
+    backend._behind = 0
+    backend._first_step = 1
+    return backend, opened
+
+
+def test_a_bucket_that_keeps_up_keeps_the_deltas(tmp_path):
+    backend, opened = _linked_backend(tmp_path, [None, 100, 200, 300])
+    for step in (100, 200, 300, 400):
+        backend._check_the_link(step)
+    assert backend.saves_every_step and not opened
+
+
+def test_a_bucket_falling_behind_moves_the_run_to_fulls(tmp_path, caplog):
+    backend, opened = _linked_backend(tmp_path, [None, 100, 100, 100, 100])
+    with caplog.at_level("WARNING", logger="ravex"):
+        for step in (100, 200, 300, 400, 500):
+            backend._check_the_link(step)
+            if opened:
+                break
+    assert opened and opened[0]["full_every_steps"] == 1
+    assert not backend.saves_every_step
+    assert step == 500, "it gave up on the link before two checkpoints in a row said so"
+    assert "behind the saves" in caplog.text
+
+
+def test_one_slow_sync_is_not_the_link(tmp_path):
+    backend, opened = _linked_backend(tmp_path, [None, 100, 100, 400, 500])
+    for step in (100, 200, 400, 500, 600):
+        backend._check_the_link(step)
+    assert backend.saves_every_step and not opened
+
+
+def test_a_store_on_the_disk_alone_is_never_judged_by_a_link(tmp_path):
+    backend, opened = _linked_backend(tmp_path, [None] * 5, remote=False)
+    for step in (100, 1000, 5000):
+        backend._check_the_link(step)
+    assert backend.saves_every_step and not opened
