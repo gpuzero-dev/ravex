@@ -292,7 +292,18 @@ def test_a_run_that_stops_moving_is_not_waited_on_past_its_deadline():
     stop = threading.Event()
     members = threading.Thread(target=_members_at_a_pace, args=(store, published, 0.2, stop), daemon=True)
     members.start()
-    threading.Timer(0.5, stop.set).start()
+
+    def stop_once_announced():
+        # The run stops moving the moment the joiner has asked for its round:
+        # the members pass at most one more boundary and never reach it. A
+        # timer did this until GPU-417 and lost the race now and then - the
+        # round arrived before it fired, the join went through, and the test
+        # failed about one time in twelve.
+        while not store.check([_membership.JOIN_KEY % BASE_WORLD]):
+            time.sleep(0.01)
+        stop.set()
+
+    threading.Thread(target=stop_once_announced, daemon=True).start()
     began = time.monotonic()
     assert not _membership.join(store, published, Joiner(), BASE_WORLD, BASE_WORLD, began + 1.0)
     waited = time.monotonic() - began
