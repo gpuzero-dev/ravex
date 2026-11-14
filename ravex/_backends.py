@@ -738,6 +738,16 @@ class MoonclipBackend(CheckpointBackend):
                 "is_delta": bool(snapshot.get("is_delta")),
                 "size_bytes": int(size) if size is not None else None,
             }
+        if self._config.storage.is_remote:
+            # What a resume or a fork can start from is what the bucket holds,
+            # not this disk (GPU-422): a window of deltas the link has not
+            # carried was listed as resume points, and the platform offered
+            # steps up to 16800 of a run whose bucket held none. Before the
+            # first sync the bucket holds nothing this process put there, and
+            # the list says so by being empty, which leaves the platform's
+            # rows as they were.
+            there = self._manager.remote_steps()
+            by_step = {step: entry for step, entry in by_step.items() if there and step in set(there)}
         return [by_step[step] for step in sorted(by_step)]
 
     def delta_steps(self) -> List[int]:

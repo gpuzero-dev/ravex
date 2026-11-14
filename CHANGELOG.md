@@ -37,6 +37,12 @@
   a node preempted after seventeen minutes left no checkpoint in its bucket,
   and its resume started from nothing. Moonclip 0.3.4 puts the newest point up
   first and never deletes what the bucket's manifest names.
+- **The checkpoints a run lists to the platform are its bucket's (GPU-422).**
+  With a bucket, the list was the local disk's, a window of deltas the link
+  had not carried, and the platform offered to resume or fork from steps the
+  bucket did not hold: up to step 16800 of a run whose bucket held none. It
+  is now the steps the bucket has whole (Moonclip's `remote_steps`), and
+  nothing before the first sync has put any there.
 - **A run that lost a starting node takes a new one (GPU-406).** A joiner
   waited for the acknowledgement of every starting node, and one that died
   without a word never gave it, so a run that had lost a starting node could

@@ -728,3 +728,44 @@ def test_a_store_on_the_disk_alone_is_never_judged_by_a_link(tmp_path):
     for step in (100, 1000, 5000):
         backend._check_the_link(step)
     assert backend.saves_every_step and not opened
+
+
+# ─── the checkpoints offered are the bucket's (GPU-422) ─────────────
+
+
+def _listing_backend(tmp_path, remote, there):
+    from types import SimpleNamespace
+
+    from ravex._backends import MoonclipBackend
+
+    config = make_config(tmp_path, backend="moonclip")
+    if remote:
+        config.storage.type = "s3"
+        config.storage.bucket = "runs"
+    backend = MoonclipBackend.__new__(MoonclipBackend)
+    backend._config = config
+    backend._manager = SimpleNamespace(
+        list_snapshots=lambda: [
+            {"step": step, "is_delta": step != 1, "total_compressed": 10} for step in range(1, 6)
+        ],
+        remote_steps=lambda: there,
+    )
+    return backend
+
+
+def test_with_a_bucket_only_the_steps_it_holds_are_offered(tmp_path):
+    """The disk held a window of deltas the link had not carried, and the
+    platform offered them: a run whose bucket held nothing showed steps up to
+    16800 to resume or fork from."""
+    backend = _listing_backend(tmp_path, remote=True, there=[1, 3])
+    assert [entry["step"] for entry in backend.known_checkpoints()] == [1, 3]
+
+
+def test_before_the_first_sync_nothing_is_offered(tmp_path):
+    backend = _listing_backend(tmp_path, remote=True, there=None)
+    assert backend.known_checkpoints() == []
+
+
+def test_a_store_on_the_disk_alone_offers_what_is_on_it(tmp_path):
+    backend = _listing_backend(tmp_path, remote=False, there=None)
+    assert [entry["step"] for entry in backend.known_checkpoints()] == [1, 2, 3, 4, 5]
