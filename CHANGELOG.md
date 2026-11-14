@@ -28,6 +28,11 @@
 
 ### Fixed
 
+- **Needs Moonclip 0.3.4, whose sync always leaves the bucket a checkpoint
+  (GPU-422).** With a delta at every step and a bucket slower than the saves,
+  a node preempted after seventeen minutes left no checkpoint in its bucket,
+  and its resume started from nothing. Moonclip 0.3.4 puts the newest point up
+  first and never deletes what the bucket's manifest names.
 - **A run that lost a starting node takes a new one (GPU-406).** A joiner
   waited for the acknowledgement of every starting node, and one that died
   without a word never gave it, so a run that had lost a starting node could

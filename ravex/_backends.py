@@ -232,7 +232,10 @@ _PREFIX = "ravex"
 #: a store it opens again by the retention it is opened with: a run that
 #: finds its deltas weigh a full goes on with fulls (GPU-418), and with an
 #: older one the store kept the window and every full written into it.
-MOONCLIP_FLOOR = (0, 3, 3)
+#: 0.3.4 is the first whose periodic sync always leaves the bucket a point to
+#: resume from: with a delta at every step and a bucket slower than the
+#: saves, an older one left none (GPU-422).
+MOONCLIP_FLOOR = (0, 3, 4)
 
 
 class MoonclipTooOld(RuntimeError):
