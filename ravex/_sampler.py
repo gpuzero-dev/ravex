@@ -15,6 +15,9 @@ generator state at ``__iter__`` time rather than at checkpoint time, and why an
 unseeded ``RandomSampler`` gets an explicit generator attached (see
 ``_ensure_generator``): without one, PyTorch draws a fresh seed from the global
 RNG on every epoch and the order is unreproducible after a restart.
+
+In a run on several nodes the index sampler is first cut to this node's part
+(:class:`NodeShare`, GPU-417), so what is tracked and replayed is the part.
 """
 
 from __future__ import annotations
@@ -303,3 +306,145 @@ class TrackedSampler:
             return len(self._original)
         except Exception:
             return None
+
+
+# ─── each node its own data (GPU-417) ───────────────────────────────
+
+
+class NodeShare:
+    """The part of a sampler's order one node of a run reads.
+
+    Every node of a run on several nodes runs the same script on the same
+    data, so without this the round averages N copies of one node's work: the
+    run pays for N GPUs and trains on one. The script is not told which node
+    it is on, and is not meant to be (it trains, on one node or on several),
+    so the split is made here, under the ``DataLoader`` Ravex already tracks.
+
+    Node ``part`` of ``parts`` keeps the indices at positions ``part``,
+    ``part + parts``, ... of the order the wrapped sampler draws. Every
+    starting node draws the same order - the same generator, seeded from the
+    run (:func:`share_between_nodes`) - so the parts are disjoint and together
+    are the whole epoch, as ``DistributedSampler`` cuts one.
+
+    It is an index sampler like the one it wraps, so the batch sampler above
+    it, the position Ravex tracks and the fast-forward on resume all work on
+    this node's part: a resumed node carries on in its own part. Everything
+    else - the generator, ``set_epoch`` - is the wrapped sampler's.
+    """
+
+    def __init__(self, original: Any, part: int, parts: int):
+        self._original = original
+        self.part = part
+        self.parts = parts
+
+    def __iter__(self):
+        for position, index in enumerate(self._original):
+            if position % self.parts == self.part:
+                yield index
+
+    def __len__(self):
+        total = len(self._original)
+        return max(0, (total - self.part + self.parts - 1) // self.parts)
+
+    def __getattr__(self, name):
+        if name.startswith("__") or name == "_original":
+            raise AttributeError(name)
+        return getattr(object.__getattribute__(self, "_original"), name)
+
+    def __repr__(self):
+        return f"NodeShare({self._original!r}, part={self.part}, parts={self.parts})"
+
+
+def _run_seed(job: str) -> int:
+    """A seed every node of one run computes alike, from the run's job name."""
+    import hashlib
+
+    return int.from_bytes(hashlib.sha256(job.encode("utf-8")).digest()[:8], "little") & (2**63 - 1)
+
+
+def node_place(config: Any):
+    """``(part, parts)`` for this node's data, or ``(None, parts)`` for a
+    node of a run on several nodes that has no place of its own, or None
+    when the data is not split at all.
+
+    Split only in a run of the outer loop that starts on two or more nodes.
+    A starting node's place is its number in the run (``outer_member``,
+    GPU-237), which the platform gives each one before the script runs; the
+    number of parts is how many start it (``outer_min_nodes``). A node that
+    joins later has no place there, and gets ``(None, parts)``.
+    """
+    if config is None or not getattr(config, "outer_loop", False):
+        return None
+    try:
+        parts = int(getattr(config, "outer_min_nodes", 1) or 1)
+    except (TypeError, ValueError):
+        return None
+    if parts < 2:
+        return None
+    member = getattr(config, "outer_member", None)
+    try:
+        member = int(member) if member is not None else None
+    except (TypeError, ValueError):
+        member = None
+    if member is None or not 0 <= member < parts:
+        return (None, parts)
+    return (member, parts)
+
+
+def share_between_nodes(sampler: Any, config: Any) -> Any:
+    """The index sampler this node should read through, given the run.
+
+    - **A starting node** reads its part (:class:`NodeShare`). The order the
+      parts are cut from has to be the same on every node, so a shuffling
+      sampler that came without a generator gets one seeded from the run's
+      job, not from this process's RNG; one the script seeded itself keeps
+      the script's seed, which a script run alike on every node gives alike.
+    - **A node without a place** - one that joined later, or a run whose
+      nodes were numbered by arrival - cannot know which part is free, so it
+      reads the whole data in an order of its own: its generator is seeded
+      afresh from the system's entropy. On a resume that seed does not
+      matter, since the generator's state comes back from the checkpoint.
+    - **One node, or no outer loop**: the sampler as it is.
+
+    A ``DistributedSampler`` is the script's own split, among the processes
+    of one node, and is left alone.
+    """
+    place = node_place(config)
+    if place is None:
+        return sampler
+    try:
+        import torch
+        from torch.utils.data.distributed import DistributedSampler
+
+        if isinstance(sampler, DistributedSampler):
+            return sampler
+    except Exception:  # pragma: no cover - defensive
+        return sampler
+
+    part, parts = place
+    has_generator = hasattr(sampler, "generator")
+    if part is None:
+        if has_generator:
+            import os
+
+            generator = torch.Generator()
+            generator.manual_seed(int.from_bytes(os.urandom(8), "little") & (2**63 - 1))
+            sampler.generator = generator
+            logger.info(
+                "This node has no place among the run's starting nodes, so it "
+                "reads the whole data in an order of its own."
+            )
+        else:
+            logger.warning(
+                "This node has no place among the run's starting nodes and the "
+                "data is read in a fixed order, so it reads what the starting "
+                "nodes read. Shuffle the DataLoader to have it read its own."
+            )
+        return sampler
+
+    if has_generator and sampler.generator is None:
+        generator = torch.Generator()
+        generator.manual_seed(_run_seed(str(getattr(config, "outer_job", "default"))))
+        sampler.generator = generator
+    logger.info("This node reads part %d of %d of the data.", part + 1, parts)
+    return NodeShare(sampler, part, parts)

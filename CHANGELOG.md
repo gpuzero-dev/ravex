@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- **Each node of a run reads data of its own (GPU-417).** Every node ran the
+  same script on the same data, so a round averaged N copies of one node's
+  work. Ravex now cuts the order of the `DataLoader` under the script: a
+  starting node reads the positions of its place (`outer_member` of
+  `outer_min_nodes`), disjoint from the others' and cut from one order seeded
+  from `outer_job`; a node that joined later reads all of it in an order of
+  its own. The script is unchanged and does not know; on one node nothing
+  moves.
+
 ### Fixed
 
 - **A run that lost a starting node takes a new one (GPU-406).** A joiner

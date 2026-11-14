@@ -1093,6 +1093,27 @@ running out of it is the answer, not a failure. It bounds a transfer that is
 merely *slow* as well as one that never starts: a fetch cut halfway leaves the
 round closed over fewer nodes and costs a resend on the next one, not the run.
 
+**Each node reads data of its own, and the script does not know** (GPU-417).
+The script builds its `DataLoader` as it would on one machine. In a run that
+starts on two or more nodes, Ravex cuts the loader's order under it:
+
+- a starting node takes the positions of its place, `outer_member`, out of
+  `outer_min_nodes`: node 1 of 2 reads positions 1, 3, 5... of the epoch. A
+  shuffled loader without a generator of its own is given one seeded from
+  `outer_job`, so every node cuts the same order and the parts are disjoint;
+  one the script seeded keeps the script's seed;
+- a node that joined later has no place, and reads the whole data in an order
+  of its own, from a generator seeded afresh;
+- a resumed node carries on in its own part: the position Ravex tracks and
+  replays is the part's.
+
+A starting node's place comes from the platform with the list of rendezvous
+addresses, one per place (GPU-237); a run whose nodes are numbered by
+arrival has none, and every node reads its own order. A `DistributedSampler`
+is the script's split among the processes of one node, and is left alone.
+Data read without a `DataLoader` is not split: a script that draws its batches
+by hand reads the same ones on every node.
+
 **Resuming a run on several nodes** (GPU-212). Each node saves the outer
 loop's own state - the outer parameters, the momentum, the round and the
 model's steps - so a node that resumes is where it was, not at round 0 with no

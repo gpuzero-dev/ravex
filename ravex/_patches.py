@@ -251,7 +251,7 @@ def _patch_dataloader(patches: PatchSet, registry, runtime, torch) -> None:
     dataloader_cls = torch.utils.data.DataLoader
 
     def on_init(loader, _result):
-        attach_tracker(loader)
+        attach_tracker(loader, getattr(runtime, "config", None))
         registry.register_dataloader(loader)
 
     patches.apply(
@@ -387,15 +387,19 @@ class _BatchBoundaryIterator:
         return getattr(object.__getattribute__(self, "_inner"), name)
 
 
-def attach_tracker(loader) -> None:
+def attach_tracker(loader, config=None) -> None:
     """Swap the loader's index source for a :class:`TrackedSampler`.
+
+    In a run on several nodes, the index sampler under it is first cut to
+    this node's part (``share_between_nodes``, GPU-417), so the position
+    tracked and replayed on resume is this node's.
 
     Assignment goes through ``__dict__`` on purpose: ``DataLoader.__setattr__``
     refuses to reassign ``sampler`` or ``batch_sampler`` once the loader has
     been initialised, and this runs immediately after ``__init__``.
     """
     import torch
-    from ravex._sampler import TrackedSampler
+    from ravex._sampler import TrackedSampler, share_between_nodes
 
     if getattr(loader, "_ravex_sampler", None) is not None:
         return
@@ -408,6 +412,15 @@ def attach_tracker(loader) -> None:
             "restored on resume (model, optimizer and RNG still are)"
         )
         return
+
+    sampler = getattr(loader, "sampler", None)
+    if sampler is not None:
+        shared = share_between_nodes(sampler, config)
+        if shared is not sampler:
+            loader.__dict__["sampler"] = shared
+            batch_sampler = getattr(loader, "batch_sampler", None)
+            if batch_sampler is not None and getattr(batch_sampler, "sampler", None) is sampler:
+                batch_sampler.sampler = shared
 
     for attribute in ("batch_sampler", "sampler"):
         original = getattr(loader, attribute, None)
