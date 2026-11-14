@@ -460,7 +460,7 @@ class TestMoonclipFloor:
         assert tuple(int(part) for part in declared.groups()) == MOONCLIP_FLOOR
 
     @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-    @pytest.mark.parametrize("version", ["0.1.2", "0.3.1", "garbage", None])
+    @pytest.mark.parametrize("version", ["0.1.2", "0.3.2", "garbage", None])
     def test_an_old_or_unreadable_moonclip_is_refused_not_replaced(self, tmp_path, monkeypatch, version):
         from ravex._backends import MoonclipTooOld
 
@@ -469,7 +469,7 @@ class TestMoonclipFloor:
             get_backend(make_config(tmp_path, backend="moonclip"))
 
     @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-    @pytest.mark.parametrize("version", ["0.3.2", "0.3.3.dev0", "1.0.0"])
+    @pytest.mark.parametrize("version", ["0.3.3", "0.3.4.dev0", "1.0.0"])
     def test_the_floor_or_later_is_used(self, tmp_path, monkeypatch, version):
         self._claiming(monkeypatch, version)
         backend = get_backend(make_config(tmp_path, backend="moonclip"))
@@ -540,3 +540,118 @@ def test_no_keys_go_to_moonclip(tmp_path, monkeypatch):
         MoonclipBackend(config)
     assert given["s3_bucket"] == "runs"
     assert not any(name in given for name in ("s3_access_key", "s3_secret_key", "s3_session_token"))
+
+
+# ─── whether a delta at every step is worth it (GPU-418) ────────────
+
+
+def _state_with(weight):
+    state = sample_state()
+    state["models"]["model_a"]["weight"] = weight
+    return state
+
+
+def _save_like_the_runtime(backend, config, steps, weight_at):
+    """Saves where the runtime makes them: at every step while the backend
+    saves every step, and at every `checkpoint_every` once it does not."""
+    for step in range(1, steps + 1):
+        if backend.saves_every_step or step % config.checkpoint_every == 0:
+            backend.save(step, _state_with(weight_at(step)), {"step": str(step)})
+    backend.flush()
+
+
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_a_state_that_changes_everywhere_ends_with_fulls_not_deltas(tmp_path, monkeypatch):
+    """AdamW's moments change everywhere at every step, and a delta of such a
+    state weighs what a full does. The run goes on with a full every
+    checkpoint instead of a full's write at every step. The floor under which
+    a full is too small to matter is lowered: a state past it is 64 MiB."""
+    from ravex import _backends
+    from ravex._backends import MoonclipBackend
+
+    monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
+
+    config = make_config(tmp_path, backend="moonclip", checkpoint_every=5, keep_last=2)
+    backend = MoonclipBackend(config)
+    _save_like_the_runtime(
+        backend, config, 20,
+        lambda step: torch.randn(4096, generator=torch.Generator().manual_seed(step)),
+    )
+    kept = backend.known_checkpoints()
+    backend.close()
+
+    assert not backend.saves_every_step
+    assert kept and not any(entry["is_delta"] for entry in kept), kept
+    assert [entry["step"] for entry in kept] == [15, 20]
+
+
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_a_state_that_barely_moves_keeps_a_delta_at_every_step(tmp_path, monkeypatch):
+    from ravex import _backends
+    from ravex._backends import MoonclipBackend
+
+    monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
+
+    config = make_config(tmp_path, backend="moonclip", checkpoint_every=5, keep_last=2)
+    backend = MoonclipBackend(config)
+    base = torch.randn(4096, generator=torch.Generator().manual_seed(0))
+
+    def weight_at(step):
+        moved = base.clone()
+        moved[:8] += step
+        return moved
+
+    _save_like_the_runtime(backend, config, 12, weight_at)
+    kept = backend.known_checkpoints()
+    backend.close()
+
+    assert backend.saves_every_step
+    assert any(entry["is_delta"] for entry in kept), kept
+
+
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_a_small_state_keeps_a_delta_at_every_step_whatever_its_deltas_weigh(tmp_path):
+    """On a few kilobytes a delta is mostly the snapshot's own framing, and a
+    write at every step costs nothing worth trading resuming from any step for."""
+    from ravex._backends import MoonclipBackend
+
+    config = make_config(tmp_path, backend="moonclip", checkpoint_every=5, keep_last=2)
+    backend = MoonclipBackend(config)
+    _save_like_the_runtime(
+        backend, config, 12,
+        lambda step: torch.randn(4096, generator=torch.Generator().manual_seed(step)),
+    )
+    backend.close()
+
+    assert backend.saves_every_step
+
+
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_a_run_whose_deltas_are_not_worth_it_saves_a_full_every_checkpoint(tmp_path, monkeypatch):
+    """The same through `train_loop`: once the deltas are found not worth it,
+    the runtime saves at the checkpoints only, and the store ends with fulls.
+    Every delta is made to count as too heavy, which is what is under test;
+    where the line lies is the backend tests' above."""
+    import ravex
+    from ravex import _backends
+    from ravex._backends import MoonclipBackend
+
+    monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
+    monkeypatch.setattr(_backends, "DELTA_WORTH", 0.0)
+    monkeypatch.chdir(tmp_path)
+
+    @ravex.train_loop(backend="moonclip", checkpoint_every=5, keep_last=2, resume=False)
+    def train():
+        torch.manual_seed(0)
+        model = torch.nn.Linear(16, 16)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+        while ravex.step() < 20:
+            optimizer.zero_grad()
+            model(torch.randn(4, 16)).pow(2).mean().backward()
+            optimizer.step()
+
+    train()
+    reader = MoonclipBackend(make_config(tmp_path, backend="moonclip", keep_last=2))
+    kept = reader.known_checkpoints()
+    reader.close()
+    assert [(entry["step"], entry["is_delta"]) for entry in kept] == [(15, False), (20, False)]

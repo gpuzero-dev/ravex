@@ -4,6 +4,6 @@
 # of the ravex package. torch comes from the machine's image (>= 2.7, what
 # torchft 0.3.1 asks for).
 torchft==0.3.1
-moonclip>=0.3.2
+moonclip>=0.3.3
 numpy
 PyYAML

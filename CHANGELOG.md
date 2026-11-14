@@ -13,6 +13,19 @@
   its own. The script is unchanged and does not know; on one node nothing
   moves.
 
+### Changed
+
+- **A run whose deltas weigh a full saves fulls instead (GPU-418).** A delta
+  at every step is what lets a run resume from any step, and Ravex's default.
+  With AdamW the moments change everywhere at every step and Moonclip stores
+  such tensors whole, so on deepseek-1b a "delta" weighed a full's 11 GB, at
+  every step, more than a rented node's disk holds for a window. Ravex now
+  weighs the first two deltas against the full they stand on; when a full is
+  64 MiB or more and a delta half of one or more, the run goes on with a full
+  every `checkpoint_every` steps, `keep_last` of them, as with `delta: false`,
+  and says so once. A resume then starts from the last full. Needs Moonclip
+  0.3.3, which keeps a store it opens again by the new retention.
+
 ### Fixed
 
 - **A run that lost a starting node takes a new one (GPU-406).** A joiner

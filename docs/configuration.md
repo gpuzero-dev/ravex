@@ -400,6 +400,16 @@ barely delta, so a delta is close to the size of a full: the window is that many
 of them on disk, and a sync sends that many. `save_dtype: {optimizer: bf16}`
 halves the part that is most of it.
 
+**When a delta weighs a full, the run saves fulls instead** (GPU-418). Ravex
+weighs the first two deltas a run writes against the full they stand on. When
+the full is 64 MiB or more and a delta weighs half of it or more, a delta at
+every step is a full's write at every step - 11 GB a step on deepseek-1b with
+AdamW - for the right to resume from any step, and the run goes on as with
+`delta: false`: a full every `checkpoint_every` steps, `keep_last` of them. It
+says so once, in a warning with both sizes. A resume from then on starts from
+the last full, and weighs its first deltas again. Below 64 MiB a full is
+small enough that its write at every step costs nothing worth that trade.
+
 ### The write path
 
 Two options change what a checkpoint costs, and both default to the fast side.

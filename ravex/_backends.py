@@ -228,8 +228,11 @@ _PREFIX = "ravex"
 #: declares in ``pyproject.toml``, and a test keeps the two equal (GPU-400).
 #: 0.3.1 is the first that reads a bucket's keys from its environment, which
 #: Ravex relies on since GPU-267, and 0.3.2 the first that needs none on a
-#: machine with a profile or a role (GPU-309).
-MOONCLIP_FLOOR = (0, 3, 2)
+#: machine with a profile or a role (GPU-309). 0.3.3 is the first that keeps
+#: a store it opens again by the retention it is opened with: a run that
+#: finds its deltas weigh a full goes on with fulls (GPU-418), and with an
+#: older one the store kept the window and every full written into it.
+MOONCLIP_FLOOR = (0, 3, 3)
 
 
 class MoonclipTooOld(RuntimeError):
@@ -282,6 +285,28 @@ def check_moonclip_version(moonclip=None) -> None:
         "torch.save instead."
         % (floor, "version %s" % getattr(moonclip, "__version__", "an unknown version"), floor)
     )
+
+
+#: How many deltas are weighed against the full they stand on before the run
+#: decides whether deltas are worth it (GPU-418). Two, so one delta that
+#: happened to land on a quiet step does not decide for the whole run.
+DELTAS_TO_WEIGH = 2
+
+#: A delta is worth writing at every step while it weighs less than this share
+#: of a full. The window keeps `checkpoint_every` of them on disk and sends
+#: them all to the bucket, so even at a half the window is many fulls' worth;
+#: past it the run pays a full's write at every step for the right to resume
+#: from any step. Known cases sit far from the line on both sides: with Adam the
+#: moments change everywhere and Moonclip stores such tensors whole
+#: (`delta_max_ratio`), so a delta of deepseek-1b weighs about a full (GPU-213);
+#: a model whose state barely moves writes deltas a small fraction of one.
+DELTA_WORTH = 0.5
+
+#: Below this a full is too small for its write at every step to cost
+#: anything worth giving up resuming from any step for, and the ratio is not
+#: worth reading: on a few kilobytes the snapshot's own framing is most of a
+#: delta. A model of a few million parameters is past it.
+FULL_WORTH_WEIGHING = 64 * 2**20
 
 
 class MoonclipBackend(CheckpointBackend):
@@ -345,7 +370,45 @@ class MoonclipBackend(CheckpointBackend):
                 "checkpoint is durable, not just copied"
             )
 
-        if not config.delta:
+        self._config = config
+        self._common = kwargs
+        self.saves_every_step = False
+        #: Whether the deltas have been weighed against the full they stand on
+        #: (GPU-418): once, early in the run, and then never again.
+        self._weighed = not config.delta
+        # `MoonclipManager`, not `CheckpointManager`. The latter is Moonclip's
+        # convenience layer: it reads RANK/WORLD_SIZE from the environment when
+        # it is not told, and under torchrun that made it refuse the
+        # single-rank save API outright — a refusal this backend caught and
+        # answered by falling back to `torch.save` with one log line, so a
+        # distributed run lost Moonclip checkpointing and said almost nothing.
+        # `MoonclipManager` is the explicit layer underneath and infers
+        # nothing; every keyword above is one it already takes.
+        self._manager = moonclip.MoonclipManager(**self._mode_kwargs(full=not config.delta))
+        self.store_root = storage.path
+
+        #: Fingerprints taken while their snapshot still existed, by step. The
+        #: audit entry for a step is written after the *next* save returns,
+        #: and that next save is the one whose retention can remove it - with
+        #: `keep_last: 1` it always does. So each step is fingerprinted at the
+        #: start of the save after it, before Moonclip is handed anything
+        #: (GPU-136). Armed from the config, before the first save, for the
+        #: reason `TorchSaveBackend.fingerprints` is.
+        self.fingerprints: Optional[Dict[int, str]] = (
+            {} if getattr(config, "audit_log", False) else None
+        )
+        self._last_saved_step: Optional[int] = None
+
+    def _mode_kwargs(self, full: bool) -> Dict[str, Any]:
+        """The manager's settings for one way of saving: a full every
+        checkpoint, or a delta at every step in a window (GPU-209). Apart
+        from the rest of the settings so that a run can be moved from the
+        second to the first (GPU-418) with everything else as it was."""
+        config = self._config
+        storage = config.storage
+        kwargs = dict(self._common)
+        self.saves_every_step = False
+        if full:
             # No dedicated switch in Moonclip: a full snapshot on every step is
             # exactly "delta disabled".
             kwargs["full_every_steps"] = 1
@@ -403,29 +466,7 @@ class MoonclipBackend(CheckpointBackend):
                     config.checkpoint_every if self.saves_every_step else 1
                 ),
             )
-
-        # `MoonclipManager`, not `CheckpointManager`. The latter is Moonclip's
-        # convenience layer: it reads RANK/WORLD_SIZE from the environment when
-        # it is not told, and under torchrun that made it refuse the
-        # single-rank save API outright — a refusal this backend caught and
-        # answered by falling back to `torch.save` with one log line, so a
-        # distributed run lost Moonclip checkpointing and said almost nothing.
-        # `MoonclipManager` is the explicit layer underneath and infers
-        # nothing; every keyword above is one it already takes.
-        self._manager = moonclip.MoonclipManager(**kwargs)
-        self.store_root = storage.path
-
-        #: Fingerprints taken while their snapshot still existed, by step. The
-        #: audit entry for a step is written after the *next* save returns,
-        #: and that next save is the one whose retention can remove it - with
-        #: `keep_last: 1` it always does. So each step is fingerprinted at the
-        #: start of the save after it, before Moonclip is handed anything
-        #: (GPU-136). Armed from the config, before the first save, for the
-        #: reason `TorchSaveBackend.fingerprints` is.
-        self.fingerprints: Optional[Dict[int, str]] = (
-            {} if getattr(config, "audit_log", False) else None
-        )
-        self._last_saved_step: Optional[int] = None
+        return kwargs
 
     def save(
         self, step: int, state: Dict[str, Any], metadata: Dict[str, str]
@@ -440,6 +481,8 @@ class MoonclipBackend(CheckpointBackend):
         # contract this class documents. It just happens one line later, inside
         # `save_raw`. That matters because for a model already on CPU the dict
         # below aliases live parameter memory rather than owning a copy of it.
+        if not self._weighed:
+            self._weigh_deltas(step)
         started = time.perf_counter()
         tensors, _ = self._moonclip.flatten_state_dict(state, _PREFIX, as_tensors=True)
         flattened = time.perf_counter()
@@ -484,6 +527,58 @@ class MoonclipBackend(CheckpointBackend):
         if self.fingerprints is not None:
             phases["fingerprint"] = fingerprinted
         return phases
+
+    def _weigh_deltas(self, step: int) -> None:
+        """Whether a delta at every step is worth what it costs, asked once,
+        on the first deltas the run writes (GPU-418).
+
+        A delta at every step is what lets a run resume from any step. It is
+        worth that while a delta is light. When the state changes everywhere
+        at every step - AdamW's moments do - Moonclip stores each tensor whole
+        and a "delta" weighs what a full does: on deepseek-1b, 11 GB a step,
+        which no rented node's disk holds for a window and which the training
+        loop waits on. Then the run goes on with a full every
+        `checkpoint_every` steps, `keep_last` of them, as with `delta: false`,
+        and says so once. What it gives up is resuming from any step: from
+        here a resume starts from the last full.
+
+        Asked before this step's save, and only until it is answered: listing
+        the snapshots waits for the writer, which the save just after would
+        wait for anyway.
+        """
+        try:
+            snapshots = self._manager.list_snapshots()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.debug("Could not weigh the deltas: %s", exc)
+            return
+        fulls = [s for s in snapshots if not s.get("is_delta") and s.get("total_compressed")]
+        deltas = [
+            int(s["total_compressed"])
+            for s in snapshots
+            if s.get("is_delta") and s.get("total_compressed") is not None
+        ]
+        if not fulls or len(deltas) < DELTAS_TO_WEIGH:
+            return
+        self._weighed = True
+        full = int(fulls[-1]["total_compressed"])
+        delta = sum(deltas[-DELTAS_TO_WEIGH:]) / DELTAS_TO_WEIGH
+        share = delta / full
+        if full < FULL_WORTH_WEIGHING or share < DELTA_WORTH:
+            logger.info(
+                "A delta weighs %.0f%% of a full: a delta at every step, as configured.",
+                100 * share,
+            )
+            return
+        logger.warning(
+            "A delta weighs %.0f%% of a full (%.1f MiB against %.1f MiB), so a "
+            "delta at every step costs a full's write at every step. From step "
+            "%d this run saves a full every %d steps and keeps %d, and a resume "
+            "starts from the last of them rather than from any step.",
+            100 * share, delta / 2**20, full / 2**20, step,
+            self._config.checkpoint_every, self._config.keep_last,
+        )
+        self._manager.flush()
+        self._manager = self._moonclip.MoonclipManager(**self._mode_kwargs(full=True))
 
     def _fingerprint_previous(self) -> Tuple[float, float]:
         """Fingerprint the last step saved while it is still in the store.

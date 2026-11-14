@@ -109,7 +109,10 @@ dependencies = ["PyYAML>=5.1"]
 #            0.3.2 since GPU-309: the README says a bucket needs no keys on a
 #            machine with a profile or a role, which Moonclip reads only since
 #            0.3.2; an older one refuses that bucket.
-moonclip = ["moonclip>=0.3.2"]
+#            0.3.3 since GPU-418: a run whose deltas weigh a full moves to
+#            fulls on the store it has, and an older Moonclip kept that store
+#            by the old window, holding a full for every step of it.
+moonclip = ["moonclip>=0.3.3"]
 dev = ["pytest>=7", "numpy"]
 
 [project.urls]

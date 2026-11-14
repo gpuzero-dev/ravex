@@ -76,7 +76,7 @@ operator alongside the table:
 - torchft 0.3.1 (`requirements.txt`), its Linux wheel, which needs torch 2.7
   or later;
 - torch: the machine image's, at least 2.7; the CPU tests run 2.15.0;
-- moonclip 0.3.2 or later.
+- moonclip 0.3.3 or later.
 
 ## Running the tests
 
