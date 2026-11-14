@@ -316,10 +316,11 @@ def test_still_serving_is_every_member_that_marked_a_round_since_the_announcemen
     assert _membership.still_serving(store, [0, 1, 2, 3], 8) == [2, 1, 3]
 
 
-def test_still_serving_without_a_single_mark_is_every_member():
-    """Members older than GPU-406 write no mark; a joiner then waits for all
-    of them, as it did before, rather than deciding they are all gone."""
-    assert _membership.still_serving(FakeStore(), [0, 1], 10) == [0, 1]
+def test_a_member_with_no_mark_is_not_waited_for():
+    """A live member marks before it writes the round a joiner reads, so one
+    with no mark at all by then is not passing boundaries: it is left out
+    like one whose mark is old (GPU-408)."""
+    assert _membership.still_serving(FakeStore(), [0, 1], 10) == []
 
 
 def test_a_member_that_serves_marks_the_round_before_writing_it():
@@ -443,3 +444,78 @@ def test_one_failed_boundary_is_a_retry_not_a_death():
         "the joiner entered round %d, the round rank 1 never acknowledged "
         "because of one failed boundary" % first
     )
+
+
+# ─── a run whose starting nodes have all been replaced (GPU-408) ─────────
+
+
+def test_the_members_are_the_starting_nodes_and_every_number_that_got_in():
+    """Rank 2 got in, so it wrote its mark; rank 3 announced and never did -
+    a candidate that gave up, which will never acknowledge or say it left."""
+    store = FakeStore()
+    _membership.announce(store, 2, 5)
+    _membership.served(store, 2, 5)
+    _membership.announce(store, 3, 7)
+    assert _membership.run_members(store, BASE_WORLD, 4) == [0, 1, 2]
+    assert _membership.run_members(store, BASE_WORLD, 0) == [1, 2]
+
+
+def test_a_node_that_joined_acknowledges_the_next_joiner():
+    """It used to write no acknowledgement, so a joiner could only ever be
+    taken in by starting nodes."""
+    store = FakeStore()
+    joined = _membership.Membership(store, BASE_WORLD, BASE_WORLD)
+    _membership.announce(store, BASE_WORLD + 1, 6)
+    _membership.serve_joins(store, Exchange(), Loop(4), joined)
+    assert _membership.acknowledged(store, BASE_WORLD + 1, [BASE_WORLD]) == []
+
+
+def test_a_join_marks_the_round_it_entered_at():
+    """The mark is what makes the node a member for the next joiner."""
+    store = FakeStore()
+    published = Published()
+    stop = threading.Event()
+    members = threading.Thread(
+        target=_members_at_a_pace, args=(store, published, 0.1, stop), daemon=True,
+    )
+    members.start()
+    try:
+        joiner = Joiner()
+        assert _membership.join(
+            store, published, joiner, BASE_WORLD, BASE_WORLD, time.monotonic() + 10
+        )
+        mark = store.get(_membership.SERVED_KEY % BASE_WORLD).decode("utf-8")
+        assert int(mark) == joiner.round_number
+    finally:
+        stop.set()
+        members.join(5)
+
+
+def test_a_join_gets_in_when_every_starting_node_has_been_replaced():
+    """Rank 0 left the run and said so, rank 1 died without a word, and rank
+    2, which joined in their place, is the run. A new node gets in from rank
+    2 alone. It used to give up at once, reading a run whose starting nodes
+    had all left as a run that was over, or else wait for state only
+    starting nodes served until its deadline (GPU-408)."""
+    store = FakeStore()
+    _membership.leave(store, 0, 4)
+    _membership.announce(store, BASE_WORLD, 3)
+    _membership.served(store, BASE_WORLD, 3)
+    published = Published()
+    stop = threading.Event()
+    members = threading.Thread(
+        target=_members_at_a_pace, args=(store, published, 0.1, stop),
+        kwargs=dict(ranks=[BASE_WORLD]), daemon=True,
+    )
+    members.start()
+    newcomer = BASE_WORLD + 1
+    try:
+        joiner = Joiner()
+        assert _membership.join(
+            store, published, joiner, newcomer, BASE_WORLD, time.monotonic() + 10
+        )
+        assert joiner.written_back
+        assert store.check([_membership.ACK_KEY % (BASE_WORLD, newcomer)])
+    finally:
+        stop.set()
+        members.join(5)

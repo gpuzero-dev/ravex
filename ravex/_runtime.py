@@ -264,9 +264,6 @@ class RavexRuntime:
         self._rendezvous_at: Optional[str] = None
         #: The server this node started when it was elected, if it was.
         self._hosting: Any = None
-        #: Whether this node came in through `membership.join` rather than
-        #: starting with the run (GPU-129). A joiner does not serve joins.
-        self._outer_joined = False
         #: The round launched and not landed yet, with `outer_overlap`
         #: (GPU-230): a `_RoundThread`. None when no round is in flight, which
         #: is always the case without it.
@@ -1371,7 +1368,6 @@ class RavexRuntime:
         # and every member computes the same answer for the same round.
         self._membership = Membership(store, rank, world, ceiling=ceiling)
         self.store_for_joins = store
-        self._outer_joined = joining
         root = self.config.outer_root or os.path.join(self._rounds_base(), str(rank))
         exchange = self._open_exchange(rank, store, root)
         self._exchange = exchange
@@ -1418,9 +1414,7 @@ class RavexRuntime:
             ):
                 raise RuntimeError(
                     "could not join the run within %ds. Nothing was published, "
-                    "so the members closed their rounds without this node. "
-                    "A run whose starting nodes have all gone cannot take a "
-                    "new one: only they serve the run's state to a joiner"
+                    "so the members closed their rounds without this node"
                     % self.config.outer_deadline
                 )
             self._membership.take_in_joined()
@@ -1806,9 +1800,12 @@ class RavexRuntime:
             window=membership.span(),
         ):
             exchange.close()
-            from ravex._dist.membership import RunOver, everyone_left
+            from ravex._dist.membership import RunOver, everyone_left, run_members
 
-            if everyone_left(store, [peer for peer in range(base) if peer != node]):
+            # Every node that was in the run, the ones that joined too
+            # (GPU-408): a run whose starting nodes all left may still be
+            # going on the nodes that replaced them.
+            if everyone_left(store, run_members(store, base, node, membership.span())):
                 # Not a failure: the others finished while this node was out.
                 raise RunOver(
                     "the run ended while node %d was out of it; every member has finished" % old
@@ -1816,7 +1813,6 @@ class RavexRuntime:
             raise cause
         membership.take_in_joined()
         self._membership = membership
-        self._outer_joined = True
         self._outer_peers = membership.peers_at(self._outer.round_number)
         logger.warning(
             "Rejoined the run as node %d at round %d.", node, self._outer.round_number
@@ -1941,7 +1937,6 @@ class RavexRuntime:
                 ) from cause
             membership.take_in_joined()
             self._membership = membership
-            self._outer_joined = True
             self._outer_peers = membership.peers_at(self._outer.round_number)
             logger.warning(
                 "Joined epoch %d of the run as node %d at round %d.",
@@ -1970,7 +1965,6 @@ class RavexRuntime:
         _rendezvous.opened(where, job, epoch, store)
         self._outer.round_number = furthest + 1
         self._membership = membership
-        self._outer_joined = False
         self._outer_peers = membership.peers_at(self._outer.round_number)
         logger.warning(
             "Carried on in epoch %d as node %d of %d, at round %d, rendezvous "
@@ -2201,23 +2195,21 @@ class RavexRuntime:
 
         if self._membership is None:
             return
-        if not self._outer_joined:
-            # Only a node the run started with serves a join: the
-            # protocol takes the state and the acknowledgements from
-            # the base members (`membership.acknowledged`), so a node
-            # that joined itself would write snapshots nobody asks for.
-            try:
-                serve_joins(
-                    self.store_for_joins, self._exchange, self._outer,
-                    self._membership,
-                )
-            except MembershipError:
-                raise
-            except Exception as exc:
-                # A joiner waits for every acknowledgement and takes
-                # state from any member, so one member failing here
-                # costs it a retry, not a split.
-                logger.warning("Could not serve joins this round: %s", exc)
+        # Every member serves a join, a node that joined too (GPU-408): it
+        # holds what the starting nodes hold, and once they have all been
+        # replaced it is the only one that can take a new node in.
+        try:
+            serve_joins(
+                self.store_for_joins, self._exchange, self._outer,
+                self._membership,
+            )
+        except MembershipError:
+            raise
+        except Exception as exc:
+            # A joiner waits for every acknowledgement and takes
+            # state from any member, so one member failing here
+            # costs it a retry, not a split.
+            logger.warning("Could not serve joins this round: %s", exc)
         try:
             self._outer_peers = self._membership.peers_at(self._outer.round_number)
         except MembershipError:

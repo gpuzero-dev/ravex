@@ -16,9 +16,16 @@
   at which it could take the announcement in still leaves and rejoins, as
   before: a safe departure, not two models. Who is averaged in a round is
   still decided on the store, so this changes whom a joiner waits for, never
-  which set a round averages. A run whose starting nodes have *all* gone
-  still cannot take a new node: only starting nodes serve a joiner the run's
-  state.
+  which set a round averages.
+- **A run whose starting nodes have all been replaced takes a new one
+  (GPU-408).** Only starting nodes gave a joiner the run's state and
+  acknowledged it, so each one lost for good narrowed who could take a node
+  in, and once all of them had been replaced - where a long run on
+  preemptible machines ends up - a joiner waited until its deadline, or gave
+  up at once reading the run as over. A node that joined now does what a
+  starting node does for the next joiner, and marks the round it entered at,
+  which is what makes it a member; a number that announced and never got in
+  is not waited for.
 
 ## 0.12.0 — 2026-11-10
 

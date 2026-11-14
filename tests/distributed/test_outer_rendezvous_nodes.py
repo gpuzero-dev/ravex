@@ -307,6 +307,19 @@ def a_node(address, job, min_nodes, root, name, role, queue, control_at=None,
                     # said (GPU-406).
                     os.kill(os.getpid(), 9)
                 if (
+                    role == "starter-on-cue"
+                    and outer.round_number >= 2
+                    and runtime._membership.rank < runtime._membership.base_world
+                    and control.check(["test/kill/%d" % runtime._membership.rank])
+                ):
+                    # The test says which starting node goes, and when: a
+                    # preemption, without a word (GPU-408).
+                    os.kill(os.getpid(), 9)
+                if role in ("replacement", "joiner") and not control.check(["test/in/" + name]):
+                    # In the run, holding its state: the test waits for this
+                    # before taking the next node away (GPU-408).
+                    control.set("test/in/" + name, b"1")
+                if (
                     role == "server-dies"
                     and kill is not None
                     and outer.round_number == 3
@@ -591,6 +604,71 @@ def test_a_run_that_lost_a_starting_node_takes_a_new_one(server, tmp_path):
             assert rounds_closed_over(results[name][2], 2), (
                 "node %s never closed a round without the dead node" % name
             )
+
+
+@pytest.mark.skipif(sys.platform == "darwin", reason="spawn is slow on macOS")
+def test_a_run_whose_starting_nodes_were_all_replaced_takes_a_new_one(server, tmp_path):
+    """GPU-408: where a long run on preemptible machines ends up. Both
+    starting nodes are killed, one at a time, and each is replaced; the run
+    is then made of nodes that joined it. A fifth node has to get in from
+    them alone - only starting nodes used to serve a joiner, so it waited
+    until its deadline - and all three must end on one model."""
+    pytest.importorskip("moonclip")
+    context = mp.get_context("spawn")
+    queue = context.Queue()
+    job = "all-replaced"
+    control = rendezvous.connect(server, job + ".control")
+    starters = [
+        context.Process(
+            target=a_node, args=(server, job, 2, str(tmp_path), name, "starter-on-cue", queue)
+        )
+        for name in ("a", "b")
+    ]
+    for node in starters:
+        node.start()
+    later = []
+    try:
+        for gone, (rank, name) in enumerate([(0, "c"), (1, "d")], start=1):
+            control.set("test/kill/%d" % rank, b"1")
+            deadline = time.monotonic() + 240
+            while sum(not node.is_alive() for node in starters) < gone:
+                assert time.monotonic() < deadline, "starting node %d never died" % rank
+                time.sleep(0.2)
+            assert all(
+                node.exitcode == -9 for node in starters if not node.is_alive()
+            ), [(node.name, node.exitcode) for node in starters]
+            replacement = context.Process(
+                target=a_node,
+                args=(server, job, 2, str(tmp_path), name, "replacement", queue),
+            )
+            replacement.start()
+            later.append(replacement)
+            while not control.check(["test/in/" + name]):
+                assert time.monotonic() < deadline, "%s never got in\n%s" % (
+                    name, tail_of(str(tmp_path), name)
+                )
+                assert replacement.is_alive(), "%s stopped\n%s" % (
+                    name, tail_of(str(tmp_path), name)
+                )
+                time.sleep(0.2)
+        newcomer = context.Process(
+            target=a_node, args=(server, job, 2, str(tmp_path), "e", "joiner", queue)
+        )
+        newcomer.start()
+        later.append(newcomer)
+        results = collect(queue, 3, str(tmp_path), "cde")
+    finally:
+        end_nodes(starters + later)
+
+    assert sorted(results) == ["c", "d", "e"], sorted(results)
+    digests = {name: digest for name, (digest, _, _) in results.items()}
+    assert len(set(digests.values())) == 1, (
+        "the nodes ended holding different models: %s (at rounds %s)"
+        % (digests, {name: last for name, (_, last, _) in results.items()})
+    )
+    lasts = {name: last for name, (_, last, _) in results.items()}
+    assert len(set(lasts.values())) == 1, lasts
+    assert any("Joined the run at round" in line for line in results["e"][2]), results["e"][2]
 
 
 @pytest.mark.skipif(sys.platform == "darwin", reason="spawn is slow on macOS")

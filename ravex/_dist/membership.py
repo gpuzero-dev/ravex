@@ -57,12 +57,19 @@ publishes a report and costs the others one deadline, which is the departure
 case and is already safe.
 
 **A dead member does not keep joiners out (GPU-406).** A joiner waits for the
-acknowledgement of the base members still in the run, not of every base
-rank: each member marks the rounds it writes the outer parameters down for
+acknowledgement of the members still in the run, not of every one that
+ever was: each member marks the rounds it writes the outer parameters down for
 (:data:`SERVED_KEY`), and one that stopped marking them has stopped passing
 round boundaries. Who contributes to a round is still decided on the store
 and applied by everyone (GPU-140), so this changes only whom the joiner
 waits for, never which set a round averages.
+
+**Every member serves a joiner, not only the starting ones (GPU-408).** A
+node that joined holds what the starting nodes hold from its admission round
+on, so it writes the state down, marks and acknowledges like them. Without
+that, each starting node lost for good narrowed the group that could take
+anyone in, and a run whose starting nodes had all been replaced - where a long
+run on preemptible machines ends up - could take nobody.
 """
 
 from __future__ import annotations
@@ -102,8 +109,8 @@ PACE_KEY = "ravex/gpu234/round-seconds"
 
 #: One member's acknowledgement that it has accepted one joiner, and at which
 #: round. **This is what makes the protocol safe rather than merely likely.**
-#: A joiner publishes its first report only once every base member still in
-#: the run has written one (:data:`SERVED_KEY` says which are); short of that
+#: A joiner publishes its first report only once every member still in the
+#: run has written one (:data:`SERVED_KEY` says which are); short of that
 #: it stays silent, and a member that admitted it pays a deadline for a round
 #: — which is the departure case, already safe — instead of averaging a
 #: contributor its peer never saw.
@@ -114,8 +121,13 @@ ACK_KEY = "ravex/gpu121/ack/%d/%d"
 #: the run from one that has died without a word: a live member passes every
 #: boundary and rewrites it while a candidate wants in, a dead one stopped
 #: rewriting it the round it died. The joiner waits for the acknowledgement
-#: of every base member whose mark is at least the round it announced *from*
+#: of every member whose mark is at least the round it announced *from*
 #: - two boundaries before the one it enters at - and for no other.
+#:
+#: A node that joined writes its first mark the moment it is in, for its
+#: admission round (GPU-408). That is also what says it is a member at all:
+#: an announced number with no mark is a candidate that never got in, and
+#: :func:`run_members` leaves it out.
 #:
 #: **Two boundaries, not one, so that a blip does not let the joiner go
 #: ahead.** A member whose store calls fail at one boundary writes neither its
@@ -445,7 +457,7 @@ class Membership:
         to know about *other* joiners to compute its own admission round, and
         it has no peer set of its own to ask for yet.
 
-        **A base member acknowledges a joiner here, the moment it accepts it**
+        **A member acknowledges a joiner here, the moment it accepts it**
         (GPU-279), and not later in :func:`serve_joins`. A boundary reads the
         announcements twice - ``serve_joins`` and then ``peers_at`` - and one
         written between the two was accepted by the second read and
@@ -495,12 +507,11 @@ class Membership:
 
     def _acknowledge_accepted(self) -> None:
         """Write the acknowledgement of every accepted joiner not yet
-        acknowledged. Only a base member's count, as :func:`acknowledged`
-        reads them; a node that joined itself writes none. One that could not
-        be written is tried again at the next read, before anything else this
-        node publishes - the joiner is waiting on it, not the round."""
-        if self.rank >= self.base_world:
-            return
+        acknowledged. A node that joined writes them too (GPU-408): a joiner
+        waits for every member still in the run, whichever way it came in.
+        One that could not be written is tried again at the next read, before
+        anything else this node publishes - the joiner is waiting on it, not
+        the round."""
         for joiner, admit in self.accepted.items():
             if joiner in self.acknowledged_joiners:
                 continue
@@ -587,7 +598,7 @@ def acknowledged(store, joiner: int, members: List[int]) -> List[int]:
     Empty means every one of them has, which is the only condition under which
     a joiner may publish its first report. A member that is gone never
     acknowledges, so the caller passes only the members still in the run -
-    :func:`still_serving` - and not every base rank (GPU-406).
+    :func:`still_serving` - and not every node that ever was one (GPU-406).
 
     A member that declared its own departure (:func:`leave`, GPU-142) is not
     waited for either, even when it is passed: it said so itself.
@@ -626,6 +637,34 @@ def mark(store, membership: "Membership", round_number: int) -> None:
         )
 
 
+def run_members(store, base_world: int, rank: int,
+                window: int = JOIN_WINDOW) -> List[int]:
+    """Every node that is or was in the run, but ``rank``: the starting
+    nodes, then each announced number that got in (GPU-408).
+
+    A number that got in wrote its mark (:data:`SERVED_KEY`) on the way in,
+    and one that only announced did not: a candidate that gave up, or died
+    joining, is not a member and never will be. Leaving it out matters twice
+    to a joiner - it would never acknowledge, and it never says it left, so
+    a run every member of which has finished would never read as over
+    (:func:`everyone_left`).
+
+    A mark that cannot be read counts as a member: deciding that a node is
+    not one is the joiner deciding, on a failed call, not to wait for it.
+    """
+    members = [peer for peer in range(base_world) if peer != rank]
+    for peer in sorted(announced(store, base_world, window)):
+        if peer == rank:
+            continue
+        try:
+            if not store.check([SERVED_KEY % peer]):
+                continue
+        except Exception:
+            pass
+        members.append(peer)
+    return members
+
+
 def still_serving(store, members: List[int], since: int) -> List[int]:
     """Which of ``members`` are still in the run, for a joiner that announced
     its round when the run was at round ``since``: those whose mark
@@ -638,36 +677,28 @@ def still_serving(store, members: List[int], since: int) -> List[int]:
     since then has stopped passing boundaries. It is dead, and waiting for its
     acknowledgement is waiting for ever, which is what this replaces.
 
-    **Only the starting nodes are asked**, and that is the limit left: a run
-    whose starting nodes have all gone has nobody who serves its state to a
-    joiner - nodes that joined later do not - so it cannot take a new node,
-    however many of the later ones are still training.
+    ``members`` is :func:`run_members`: the starting nodes and the ones that
+    joined since, which serve a joiner the same way (GPU-408).
 
-    **When no member has written a mark at all**, every one of ``members`` is
-    returned, as before this existed: that is a run whose members are older
-    than GPU-406, and leaving them out would be the joiner deciding on its own
-    that every one of them is gone. A mark that cannot be read counts as
-    live; so, in effect, does one its member could not write, since that
-    member writes again at the next boundary and two of them pass before a
-    mark is old enough to leave it out.
+    A member with no mark at all is left out like one with an old mark: a
+    live one marks before it writes the round the joiner reads, so none is
+    missing by then. A mark that cannot be read counts as live; so, in
+    effect, does one its member could not write, since that member writes
+    again at the next boundary and two of them pass before a mark is old
+    enough to leave it out.
     """
     marks: List[Tuple[int, int]] = []
     unread: List[int] = []
-    any_written = False
     for member in members:
         try:
             if not store.check([SERVED_KEY % member]):
                 continue
-            any_written = True
             last = int(json.loads(store.get(SERVED_KEY % member).decode("utf-8")))
         except Exception:
-            any_written = True
             unread.append(member)
             continue
         if last >= int(since):
             marks.append((last, member))
-    if not any_written:
-        return list(members)
     marks.sort(key=lambda found: (-found[0], found[1]))
     return [member for _, member in marks] + unread
 
@@ -767,23 +798,24 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
        rounds behind everybody and stay exactly that far behind for the length
        of the run, which is ``adopt_outer_state``'s failure with a different
        cause.
-    4. **Check every base member still in the run acknowledged** before
+    4. **Check every member still in the run acknowledged** before
        publishing anything. This is the step that turns the remaining race
        into a wasted deadline: if one member never saw the announcement, this
        node stays silent, every member closes the round without it, and they
        all close the *same* round.
 
-    A base member that died without a word is not waited for (GPU-406): it
+    A member that died without a word is not waited for (GPU-406): it
     stopped writing :data:`SERVED_KEY`, and :func:`still_serving` leaves it
     out. Waiting for it, as this did until then, meant a run that had lost a
     starting node could never take another one - the most common case on
     rented machines, where a preempted box is replaced by a new one.
 
-    **What is still not possible**: joining a run whose starting nodes have
-    all gone. Only they serve the state and acknowledge, and a node that
-    joined does neither, so the joiner waits for a state nobody writes and
-    gives up at its deadline. On preemptible machines a long run drifts
-    towards this, one replaced box at a time.
+    The members are the starting nodes and every node that joined since
+    (:func:`run_members`, GPU-408), asked again each time they are needed:
+    one that got in while this node was waiting is a member too. So a run
+    whose starting nodes have all been replaced still takes a new node.
+    Once in, this node writes its own mark for the round it entered at,
+    which is what makes it one of them for the next joiner.
 
     Throughout, the candidate beats (:func:`beat`) at least every
     :data:`JOIN_BEAT` seconds, which is what keeps the members writing the
@@ -802,7 +834,6 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
     ``JOIN_MARGIN + 2`` rounds one join takes, and a run that stops moving
     runs it out from its last move.
     """
-    members = [peer for peer in range(base_world) if peer != rank]
     # What the members wrote for the last node that joined, if one did. They
     # write it only while somebody wants in, so between joins it stays where
     # the last join left it, rounds behind the run: announcing from it names a
@@ -849,9 +880,9 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
         # nobody to take this node in, and waiting would last the whole
         # deadline: on rented machines, fifteen minutes billed for a node
         # alone (GPU-186). Asked once a second, not at every poll.
-        if members and time.monotonic() - looked_for_members >= 1.0:
+        if time.monotonic() - looked_for_members >= 1.0:
             looked_for_members = time.monotonic()
-            if everyone_left(store, members):
+            if everyone_left(store, run_members(store, base_world, rank, window)):
                 logger.warning(
                     "Every member of the run has left it; there is nobody to "
                     "join. Giving up rather than waiting out the deadline."
@@ -904,7 +935,10 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
 
         # Only the members still in the run: one that died without a word
         # never acknowledges, and waiting for it kept every replacement out
-        # of a run that had lost a starting node (GPU-406).
+        # of a run that had lost a starting node (GPU-406). Read here and
+        # not once at the start: a node that got in meanwhile is one of
+        # them (GPU-408).
+        members = run_members(store, base_world, rank, window)
         live = still_serving(store, members, announced_from)
         missing = acknowledged(store, rank, live)
         if missing:
@@ -942,6 +976,13 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
         apply_state(loop, state.delta)
         loop.round_number = announced_at
         loop.steps_this_round = 0
+        try:
+            # In, and from here one of the members a later joiner waits for
+            # and takes the state from (GPU-408). A mark that could not be
+            # written is written at this node's next boundary that serves.
+            served(store, rank, announced_at)
+        except Exception as exc:
+            logger.debug("Could not mark round %d as served (%s).", announced_at, exc)
         gave_up(store, rank)
         logger.info(
             "Joined the run at round %d, holding the outer parameters every "
