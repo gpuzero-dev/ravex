@@ -236,8 +236,12 @@ _PREFIX = "ravex"
 #: resume from: with a delta at every step and a bucket slower than the
 #: saves, an older one left none (GPU-422). 0.3.5 is the first that says
 #: which step the bucket last had whole (`remote_step`), which tells a run
-#: whether its link keeps up with a delta at every step (GPU-418).
-MOONCLIP_FLOOR = (0, 3, 5)
+#: whether its link keeps up with a delta at every step (GPU-418). 0.3.6 is
+#: the first whose periodic sync sends each snapshot's ranks file with its
+#: packs: an older one wrote them one at a time afterwards, ~45 s of a ~70 s
+#: sync from a rented node to R2, while the metrics and the next sync waited
+#: (GPU-422).
+MOONCLIP_FLOOR = (0, 3, 6)
 
 
 class MoonclipTooOld(RuntimeError):

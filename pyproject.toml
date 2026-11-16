@@ -116,7 +116,10 @@ dependencies = ["PyYAML>=5.1"]
 #            checkpoint at all with an older one, and the resume started over.
 #            0.3.5 since GPU-418: it says which step the bucket last had
 #            whole, and a run whose bucket keeps falling behind goes to fulls.
-moonclip = ["moonclip>=0.3.5"]
+#            0.3.6 since GPU-422: an older one wrote each snapshot's
+#            ranks.json one at a time after a sync's copies, ~45 s of a ~70 s
+#            sync to R2, which held up the metrics and every later sync.
+moonclip = ["moonclip>=0.3.6"]
 dev = ["pytest>=7", "numpy"]
 
 [project.urls]
