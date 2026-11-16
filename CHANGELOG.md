@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.13.1 — 2026-11-16
+
+### Changed
+
+- **Ravex needs Moonclip 0.3.6 (GPU-422).** Its periodic sync sends each
+  snapshot's ranks file with the snapshot's packs. An older one wrote them one
+  at a time after the copies: measured from a vast.ai node to R2, ~45 s of a
+  ~70 s sync, while the run's metrics and its next sync waited, so the bucket
+  fell behind the saves and a node lost mid-run had less to resume from.
+
 ## 0.13.0 — 2026-11-14
 
 ### Added
