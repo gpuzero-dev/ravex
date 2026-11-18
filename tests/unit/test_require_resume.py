@@ -238,3 +238,42 @@ def test_a_bucket_without_moonclip_is_an_error_and_not_this_machines_disk(monkey
     # On this machine's disk it is still the fallback it always was.
     config.storage.type = "local"
     assert isinstance(_backends.get_backend(config), _backends.TorchSaveBackend)
+
+
+def test_an_optimizer_kept_across_two_runs_is_the_second_runs(storage):
+    """Its step hooks were the first run's for good: the second counted
+    nothing, and the first, over, went on counting (GPU-476)."""
+    torch.manual_seed(0)
+    model = torch.nn.Linear(4, 2)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+    counted = []
+
+    def run():
+        ravex.track(model=model, optimizer=optimizer)
+        for _ in range(2):
+            model(torch.randn(2, 4)).sum().backward()
+            optimizer.step()
+            optimizer.zero_grad()
+        counted.append(ravex.step())
+
+    ravex.train_loop(backend="torch_save", checkpoint_every=100, resume=False)(run)()
+    assert getattr(optimizer, "_ravex_hooked", None) is None, "the run is over and its hooks are still on"
+    ravex.train_loop(backend="torch_save", checkpoint_every=100, resume=False)(run)()
+    assert counted == [2, 2]
+
+
+def test_a_resume_that_fails_part_of_the_way_in_stops_the_run(storage, monkeypatch):
+    """The model restored and the optimizer not is neither the checkpoint
+    nor a fresh start, and trained on under the run's name (GPU-476)."""
+    from ravex._resume import ResumeRefused
+
+    ravex.train_loop(backend="torch_save", checkpoint_every=2)(lambda: script(4, {}))()
+
+    def broken(self, state):
+        raise ValueError("a state of another optimizer")
+
+    monkeypatch.setattr(torch.optim.SGD, "load_state_dict", broken)
+    seen = {}
+    with pytest.raises(ResumeRefused, match="part of the way in"):
+        ravex.train_loop(backend="torch_save", checkpoint_every=2)(lambda: script(6, seen))()
+    assert seen == {}

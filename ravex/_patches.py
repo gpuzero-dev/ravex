@@ -168,21 +168,29 @@ def _attach_step_hook(optimizer, runtime) -> None:
     only — still safe with LR schedulers, which wrap whatever ``optimizer.step``
     is at the time they are built.
     """
-    if getattr(optimizer, "_ravex_hooked", False):
+    if getattr(optimizer, "_ravex_hooked", None) is runtime:
         return
+    # Another runtime's, from a run that is over - a notebook's second
+    # `train_loop`, an optimizer kept across two: its hooks go first. Left,
+    # the flag kept this runtime from ever counting a step, and the dead one
+    # went on counting, and checkpointing into a backend it had closed
+    # (GPU-476).
+    detach_step_hook(optimizer)
 
     register = getattr(optimizer, "register_step_post_hook", None)
     if callable(register):
-        register(lambda opt, args, kwargs: runtime.on_step(opt))
+        handles = [register(lambda opt, args, kwargs: runtime.on_step(opt))]
         # Before the step too, for what has to be seen on both sides of it:
         # the update-to-weight ratios (GPU-436). Same version of torch.
         register_pre = getattr(optimizer, "register_step_pre_hook", None)
         if callable(register_pre):
-            register_pre(lambda opt, args, kwargs: runtime.before_step(opt))
-        optimizer._ravex_hooked = True
+            handles.append(register_pre(lambda opt, args, kwargs: runtime.before_step(opt)))
+        optimizer._ravex_step_handles = handles
+        optimizer._ravex_hooked = runtime
         return
 
     original_step = optimizer.step
+    optimizer._ravex_original_step = original_step
 
     @functools.wraps(original_step)
     def step(*args, **kwargs):
@@ -194,7 +202,23 @@ def _attach_step_hook(optimizer, runtime) -> None:
         return result
 
     optimizer.step = step
-    optimizer._ravex_hooked = True
+    optimizer._ravex_hooked = runtime
+
+
+def detach_step_hook(optimizer) -> None:
+    """Take a runtime's step hooks off ``optimizer``, whichever way they
+    were put on; nothing to do for one that has none."""
+    for handle in getattr(optimizer, "_ravex_step_handles", ()) or ():
+        try:
+            handle.remove()
+        except Exception:  # pragma: no cover - defensive
+            pass
+    optimizer._ravex_step_handles = []
+    original = getattr(optimizer, "_ravex_original_step", None)
+    if original is not None:
+        optimizer.step = original
+        optimizer._ravex_original_step = None
+    optimizer._ravex_hooked = None
 
 
 def _patch_clip_grad_norm(patches: PatchSet, runtime, torch) -> None:

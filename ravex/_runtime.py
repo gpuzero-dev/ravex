@@ -1029,6 +1029,14 @@ class RavexRuntime:
                 pass
         self._iteration_hooks.clear()
         self._activation_hooks = []
+        # And the step hooks on the optimizers, which outlive the run with
+        # the optimizer (GPU-476): a step taken after it would be counted
+        # by a runtime that is over.
+        from ravex._patches import detach_step_hook
+
+        for optimizer in self.registry.optimizers:
+            if getattr(optimizer, "_ravex_hooked", None) is self:
+                detach_step_hook(optimizer)
 
     def resume_if_ready(self) -> None:
         """Resume now if it has not happened and the run can be restored.
@@ -2941,6 +2949,20 @@ class RavexRuntime:
                     "The checkpoint this run was asked to continue from does not fit it (%s). "
                     "If a parameter that changes the model was changed, start a new run "
                     "from scratch instead" % exc
+                ) from exc
+            if self.registry.step_count != 0:
+                # It failed part of the way in: the step counter is the
+                # checkpoint's, and so are the weights restored before the
+                # failure, while whatever came after it - the optimizer's
+                # moments, the scheduler, the data's position - is this
+                # process's fresh one. "From scratch" would be a lie about a
+                # run that is neither, and trains on as a third thing under
+                # the run's name (GPU-476). Nothing here can undo the half
+                # that was loaded, so the run stops.
+                raise ResumeRefused(
+                    "The resume failed part of the way in (%s): the model is the "
+                    "checkpoint's and the rest is not. Stopping instead of training "
+                    "on from a state that is neither the checkpoint nor a fresh start" % exc
                 ) from exc
             logger.warning("Resume failed (%s) - starting from scratch", exc)
         finally:
