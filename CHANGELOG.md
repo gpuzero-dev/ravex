@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.14.3 — 2026-11-18
+
+### Added
+
+- **`perf/mfu` on an RTX A6000 (GPU-436).** Its datasheet's dense peaks:
+  154.8 TFLOPS in bf16 and fp16, 77.4 in TF32, 38.7 in fp32.
+
 ## 0.14.2 — 2026-11-18
 
 ### Fixed
