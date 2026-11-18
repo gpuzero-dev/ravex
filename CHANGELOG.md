@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.1 — 2026-11-18
+
+### Added
+
+- **`bench/pretraining_cost.py` (GPU-436).** A decoder of about a billion
+  parameters trained with nothing but the decorator and a logged loss, which
+  times each step and says what a histogram step adds. No change to the
+  library.
+
 ## 0.14.0 — 2026-11-18
 
 ### Added
