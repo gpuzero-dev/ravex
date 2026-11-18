@@ -131,6 +131,12 @@ def _seconds(value: float) -> str:
     return "%.3g" % value if value < 1000 else "%.0f" % value
 
 
+class NoPeers(RuntimeError):
+    """The outer loop was asked for where there is nobody to run it with: no
+    rendezvous, or a world of one. The one failure of its start after which
+    a node trains alone, since alone is all it ever was (GPU-459)."""
+
+
 class Preempted(BaseException):
     """SIGTERM arrived, and the training stops at the first safe point (GPU-294).
 
@@ -1481,19 +1487,18 @@ class RavexRuntime:
             # for a reason that stopped being true immediately after.
             return None
 
-        from ravex._dist.exchange import RegionUnreachable
-        from ravex._dist.membership import PeerSilent
-
         try:
             self._outer = self._build_outer_loop()
-        except (RegionUnreachable, PeerSilent):
-            # Not a loop that could not be had but a run that must not go on:
-            # training this node alone is the two halves it exists to prevent
-            # (GPU-233), and a peer that is gone is not coming back to this
-            # job (GPU-443). The job ends, and its machine with it. The
-            # exchanges' threads are daemons and go with it.
-            raise
-        except Exception as exc:
+        except NoPeers as exc:
+            # The one case a node goes on alone: nobody was ever there to
+            # train with. Anything else rises - a region out of reach
+            # (GPU-233), a peer gone silent (GPU-443), and equally a
+            # rendezvous too few nodes reached, a run this node could not
+            # join or whose state it could not take (GPU-459): there were
+            # peers, and training this node alone for the whole run is a
+            # second model, paid for, under the run's name. The job ends,
+            # and its machine with it. The exchanges' threads are daemons
+            # and go with it.
             logger.warning(
                 "Could not start the outer loop (%s). Training continues "
                 "locally, which for a job that expected to train with peers "
@@ -1577,7 +1582,7 @@ class RavexRuntime:
             # the exchange, so a rank dying breaks a group nothing here
             # touches. What it constrains is the start: `init_process_group`
             # is collective, so everyone has to be present once.
-            raise RuntimeError(
+            raise NoPeers(
                 "no rendezvous store: the outer loop takes peer addresses and "
                 "the job token from torch's store, which exists only after "
                 "init_process_group. Launch under torchrun (across machines "
@@ -1586,7 +1591,7 @@ class RavexRuntime:
             )
 
         if not address and world < 2:
-            raise RuntimeError("world size is %d; a round needs peers" % world)
+            raise NoPeers("world size is %d; a round needs peers" % world)
 
         # The set this node exchanges with is now asked for **per round**
         # rather than computed once (GPU-121). Computed once, a node that joins
@@ -2789,11 +2794,6 @@ class RavexRuntime:
             return
         if self.registry.is_empty():
             return  # nothing to restore into yet
-        self._try_resume(defer_rng=True)
-
-    def after_dataloader_iter(self) -> None:
-        """Called once the loader's iterator exists.
-
         if not self.registry.optimizers:
             # Not yet, as `resume_if_ready` waits: a pass over the loader
             # before the optimizer is built - an evaluation, a warm-up of the
@@ -2801,6 +2801,11 @@ class RavexRuntime:
             # started from nothing under a step counter that said otherwise
             # (GPU-458). The loop's own `iter(loader)` comes back here.
             return
+        self._try_resume(defer_rng=True)
+
+    def after_dataloader_iter(self) -> None:
+        """Called once the loader's iterator exists.
+
         Constructing it draws a worker base seed from the global RNG, so the
         restored RNG state is applied here rather than in
         :meth:`on_dataloader_iter` — otherwise the first resumed step would run

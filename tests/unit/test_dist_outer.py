@@ -687,9 +687,18 @@ def test_a_silent_peer_is_not_a_reason_to_train_alone(monkeypatch):
     with pytest.raises(membership.PeerSilent):
         runtime._outer_loop()
 
-    def other(self):
-        raise RuntimeError("no rendezvous")
+    # Nor does a start that failed with peers there to train with (GPU-459).
+    def too_few(self):
+        raise RuntimeError("only 1 of the 2 node(s) reached the rendezvous")
 
-    monkeypatch.setattr(_runtime.RavexRuntime, "_build_outer_loop", other)
+    monkeypatch.setattr(_runtime.RavexRuntime, "_build_outer_loop", too_few)
+    runtime._outer = None
+    with pytest.raises(RuntimeError, match="only 1 of the 2"):
+        runtime._outer_loop()
+
+    def nobody(self):
+        raise _runtime.NoPeers("no rendezvous")
+
+    monkeypatch.setattr(_runtime.RavexRuntime, "_build_outer_loop", nobody)
     runtime._outer = None
     assert runtime._outer_loop() is None and runtime._outer is False
