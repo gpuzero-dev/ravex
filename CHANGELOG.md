@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.14.0 — 2026-11-18
 
 ### Added
 
@@ -16,6 +16,12 @@
   (`train/updates/<name>`) and the blocks' outputs
   (`train/activations/<blocks>.<i>`). The same few parameters however deep the
   model, each sampled down to a fixed size.
+
+### Changed
+
+- **The README no longer gives old versions and platforms (GPU-413).**
+  Moonclip's wheels are named for what is published now, and the pin advice
+  says which number of the version a patch release moves.
 
 ## 0.13.1 — 2026-11-16
 
