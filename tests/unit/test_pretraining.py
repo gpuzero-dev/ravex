@@ -157,6 +157,56 @@ class TestPerplexity:
         assert mean_perplexity({}) == {}
 
 
+class Expert(nn.Module):
+    def __init__(self, width):
+        super().__init__()
+        self.w1 = nn.Linear(width, 2 * width, bias=False)
+        self.w2 = nn.Linear(2 * width, width, bias=False)
+
+
+class MoEBlock(nn.Module):
+    """A mixture's block: its list of experts is longer than the model's list of blocks."""
+
+    def __init__(self, width, experts):
+        super().__init__()
+        self.attn = nn.Linear(width, width, bias=False)
+        self.ffn = nn.ModuleDict({"experts": nn.ModuleList(Expert(width) for _ in range(experts))})
+
+
+class TinyMoE(nn.Module):
+    def __init__(self, width=8, layers=3, experts=8, active=2):
+        super().__init__()
+        self.embed = nn.Embedding(16, width)
+        self.layers = nn.ModuleList(MoEBlock(width, experts) for _ in range(layers))
+        self.head = nn.Linear(width, 16, bias=False)
+        self.args = types.SimpleNamespace(n_layers=layers, dim=width, n_routed_experts=experts,
+                                          n_activated_experts=active)
+
+
+class TestMixtureOfExperts:
+    def test_the_blocks_are_the_list_that_holds_the_experts_not_one_of_them(self):
+        names = [name for name, _ in layer_parameters(TinyMoE(layers=3, experts=8))]
+        # The first, middle and last of the model's three blocks, not of one
+        # block's eight experts.
+        for index in (0, 1, 2):
+            assert "layers.%d.attn.weight" % index in names
+
+    def test_only_the_active_share_of_the_experts_counts(self):
+        model = TinyMoE(width=8, layers=1, experts=8, active=2)
+        flops = flops_for(model, {"fp32": 10.0}, None, tf32=False)
+        experts = 8 * (8 * 16 + 16 * 8)
+        dense = 8 * 8 + 8 * 16
+        assert flops.per_token == pytest.approx(6.0 * (dense + experts * 2 / 8))
+
+    def test_a_mixture_that_does_not_say_its_k_has_no_mfu(self):
+        model = TinyMoE()
+        del model.args.n_activated_experts
+        assert flops_for(model, {"fp32": 10.0}, None, tf32=False) is None
+
+    def test_the_shape_from_args_too(self):
+        assert attention_shape(TinyMoE(width=8, layers=3)) == (3, 8)
+
+
 class TestLayers:
     def test_embedding_three_blocks_norm_and_head(self):
         names = [name for name, _ in layer_parameters(TinyLM(layers=5))]

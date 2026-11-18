@@ -213,16 +213,55 @@ def _config_value(config: Any, names: Iterable[str]) -> Optional[int]:
     return None
 
 
+def _configurations(model: Any) -> List[Any]:
+    """Where a model says its shape: ``config`` as Hugging Face models do, ``args`` as many others."""
+    return [found for found in (getattr(model, "config", None), getattr(model, "args", None)) if found is not None]
+
+
+def _setting(model: Any, names: Iterable[str]) -> Optional[int]:
+    names = tuple(names)
+    for config in _configurations(model):
+        value = _config_value(config, names)
+        if value is not None:
+            return value
+    return None
+
+
 def attention_shape(model: Any) -> Optional[Tuple[int, int]]:
     """``(layers, width)`` from the model's configuration, as Hugging Face names them, or None."""
-    config = getattr(model, "config", None)
-    if config is None:
-        return None
-    layers = _config_value(config, ("num_hidden_layers", "n_layer", "num_layers", "n_layers"))
-    width = _config_value(config, ("hidden_size", "n_embd", "d_model", "dim"))
+    layers = _setting(model, ("num_hidden_layers", "n_layer", "num_layers", "n_layers"))
+    width = _setting(model, ("hidden_size", "n_embd", "d_model", "dim"))
     if layers is None or width is None:
         return None
     return layers, width
+
+
+#: A mixture of experts' list of routed experts, by its attribute's name.
+_EXPERTS = re.compile(r"(^|\.)(experts|local_experts)$")
+
+
+def routed_experts(model: Any) -> List[Any]:
+    """Every ``ModuleList`` of routed experts in the model (a mixture of experts), or none."""
+    import torch.nn as nn
+
+    return [
+        module for name, module in model.named_modules()
+        if isinstance(module, nn.ModuleList) and len(module) > 1 and _EXPERTS.search(name)
+    ]
+
+
+def active_share(model: Any) -> Optional[float]:
+    """The share of a mixture's routed experts each token goes through: ``k / experts``.
+
+    From the configuration's names for them, as Hugging Face (``num_experts_per_tok``,
+    ``num_local_experts``) and DeepSeek (``n_activated_experts``, ``n_routed_experts``)
+    say them. None when it does not say both.
+    """
+    chosen = _setting(model, ("num_experts_per_tok", "n_activated_experts", "moe_top_k", "top_k"))
+    total = _setting(model, ("num_local_experts", "n_routed_experts", "num_experts", "n_experts"))
+    if chosen is None or total is None or chosen > total:
+        return None
+    return chosen / total
 
 
 def multiplied_parameters(model: Any) -> List[Any]:
@@ -285,6 +324,18 @@ def flops_for(model: Any, peaks: Mapping[str, float], autocast: Optional[Any], t
     params = multiplied_parameters(model)
     if not params:
         return None
+    # A mixture of experts: a token goes through k of the routed experts, so
+    # each of their parameters costs k / experts of a dense one. A mixture
+    # whose configuration does not say k gets no MFU: counting every expert
+    # would claim several times the work that was done.
+    routed = {id(param) for experts in routed_experts(model) for param in experts.parameters()}
+    share = 1.0
+    if routed:
+        found = active_share(model)
+        if found is None:
+            logger.info("No MFU: a mixture of experts whose configuration does not say how many a token uses.")
+            return None
+        share = found
     total = 0.0
     seconds = 0.0
     for param in params:
@@ -294,7 +345,7 @@ def flops_for(model: Any, peaks: Mapping[str, float], autocast: Optional[Any], t
         if not peak:
             logger.info("No MFU: the GPU has no known peak for %s, which part of the model computes in.", dtype)
             return None
-        flops = 6.0 * param.numel()
+        flops = 6.0 * param.numel() * (share if id(param) in routed else 1.0)
         total += flops
         seconds += flops / peak
     shape = attention_shape(model)
@@ -316,18 +367,25 @@ MAX_PER_PART = 4
 
 
 def _blocks(model: Any) -> Tuple[str, List[Any]]:
-    """The model's blocks: its longest ``ModuleList`` of one class, with its name."""
+    """The model's blocks: the ``ModuleList`` of one class that holds the most parameters, with its name.
+
+    The most parameters, not the most entries: a mixture of experts has, in
+    each block, a list of experts longer than the list of blocks, and the
+    blocks hold every one of those lists.
+    """
     import torch.nn as nn
 
     best: Tuple[str, List[Any]] = ("", [])
+    best_size = 0
     for name, module in model.named_modules():
         if not isinstance(module, nn.ModuleList) or len(module) < 2:
             continue
         children = list(module)
         if len({type(child) for child in children}) != 1:
             continue
-        if len(children) > len(best[1]):
-            best = (name, children)
+        size = sum(param.numel() for param in module.parameters())
+        if size > best_size:
+            best, best_size = (name, children), size
     return best
 
 
