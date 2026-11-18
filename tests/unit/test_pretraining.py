@@ -66,12 +66,13 @@ class TestPeaks:
         ("NVIDIA L4", 121.0),
         ("NVIDIA L40S", 362.1),
         ("NVIDIA GeForce RTX 4090", 165.2),
+        ("NVIDIA RTX A6000", 154.8),
         ("AMD Instinct MI300X", 1307.4),
     ])
     def test_a_known_gpu(self, name, bf16):
         assert peaks_for(name)["bf16"] == bf16
 
-    @pytest.mark.parametrize("name", ["NVIDIA H100 NVL", "Tesla T4", "", None, "NVIDIA A10G"])
+    @pytest.mark.parametrize("name", ["NVIDIA H100 NVL", "Tesla T4", "", None, "NVIDIA A10G", "NVIDIA RTX 6000 Ada Generation"])
     def test_an_unknown_gpu_has_no_peak_rather_than_a_guess(self, name):
         assert peaks_for(name) is None
 

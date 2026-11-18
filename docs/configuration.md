@@ -829,9 +829,9 @@ CPU and RAM need `psutil`.
   under it, else its own, so a model whose components compute at different
   precisions gets the peak of that mix. That is the compute dtype, not the one
   a component is saved at (`ravex.save_dtype`). Without the GPU in Ravex's
-  table (H100, H200, A100, A10, A40, L4, L40S, RTX 3090 and 4090, MI300X), off
-  CUDA, or on a sharded model, there is no MFU: a guessed number is worse than
-  none.
+  table (H100, H200, A100, A10, A40, L4, L40S, RTX A6000, RTX 3090 and 4090,
+  MI300X), off CUDA, or on a sharded model, there is no MFU: a guessed number
+  is worse than none.
 - `train/ppl` and `val/ppl`: `exp` of what the script logs as `train/loss` and
   `val/loss`, at the same steps. Ravex does not see the loss on its own, so
   these come only with the script's `log_metrics`; log the loss under those
