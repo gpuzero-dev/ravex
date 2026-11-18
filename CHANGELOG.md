@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.14.2 — 2026-11-18
+
+### Fixed
+
+- **A mixture of experts is charted and measured as one (GPU-436).** The
+  blocks are the list that holds the most parameters, not the longest: a
+  block's list of experts is longer than the list of blocks, and the
+  histograms were taken from one block's experts. And `perf/mfu` counts the
+  routed experts at the share a token goes through, `k / experts` from the
+  configuration (`num_experts_per_tok` or `n_activated_experts`); a mixture
+  whose configuration does not say it gets no MFU, rather than one several
+  times too high. The model's shape is read from `args` too, not only `config`.
+
 ## 0.14.1 — 2026-11-18
 
 ### Added
