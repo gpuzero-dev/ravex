@@ -244,6 +244,17 @@ _PREFIX = "ravex"
 MOONCLIP_FLOOR = (0, 3, 6)
 
 
+class RemoteNeedsMoonclip(RuntimeError):
+    """The run's store is a bucket and Moonclip, which is what writes to one,
+    is missing or could not open it (GPU-469).
+
+    Not a reason to fall back to ``torch_save``, which writes this machine's
+    disk alone: on a node a provider takes back, the checkpoints went with
+    the node and the run that replaced it started from step 0, having said
+    nothing but a warning at the start. Raised, the checkpoint fails where
+    it is seen, and a run that must resume stops."""
+
+
 class MoonclipTooOld(RuntimeError):
     """An installed Moonclip older than :data:`MOONCLIP_FLOOR`.
 
@@ -1431,8 +1442,17 @@ def get_backend(config, per_rank: bool = False) -> CheckpointBackend:
             # papered over with torch.save.
             raise
         except ImportError:
+            if config.storage.is_remote:
+                raise RemoteNeedsMoonclip(
+                    "This run's checkpoints go to a bucket, which Moonclip writes, and "
+                    "Moonclip is not installed (pip install 'ravex[moonclip]')"
+                ) from None
             logger.warning("Moonclip is not installed - falling back to torch.save")
         except Exception as exc:
+            if config.storage.is_remote:
+                raise RemoteNeedsMoonclip(
+                    "This run's checkpoints go to a bucket, and Moonclip could not open it (%s)" % exc
+                ) from exc
             logger.warning("Moonclip backend unavailable (%s) - falling back", exc)
         return TorchSaveBackend(config)
 

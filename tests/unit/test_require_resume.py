@@ -198,3 +198,43 @@ class TestWithADataLoader:
             runtime_module.RavexRuntime._try_resume = original
         assert resumed["optimizers"] == 1, "the resume ran before there was an optimizer to restore"
         assert seen["first"] == 4
+
+
+class TestWhatAResumeAlreadyHolds:
+    def test_a_run_stopped_before_its_first_step_does_not_save_the_step_again(self, storage, monkeypatch):
+        """Resumed at step 4 and ended there: step 4 is in the store, and
+        writing it again spent a preemption's grace, and a crash loop's
+        retention, on copies of one checkpoint (GPU-469)."""
+        from ravex import _backends
+
+        ravex.train_loop(backend="torch_save", checkpoint_every=2)(lambda: script(4, {}))()
+        saved = []
+        original = _backends.TorchSaveBackend.save
+
+        def spy(self, *args, **kwargs):
+            saved.append(args[0] if args else kwargs.get("step"))
+            return original(self, *args, **kwargs)
+
+        monkeypatch.setattr(_backends.TorchSaveBackend, "save", spy)
+        ravex.train_loop(backend="torch_save", checkpoint_every=2, require_resume=True)(lambda: script(4, {}))()
+        assert saved == []
+
+
+def test_a_bucket_without_moonclip_is_an_error_and_not_this_machines_disk(monkeypatch):
+    """torch.save writes this disk alone: on a node a provider takes back
+    the checkpoints went with it (GPU-469)."""
+    from ravex import _backends
+
+    def broken(config):
+        raise OSError("the bucket refused these keys")
+
+    monkeypatch.setattr(_backends, "MoonclipBackend", broken)
+    config = RavexConfig()
+    config.backend = "moonclip"
+    config.storage.type = "s3"
+    config.storage.bucket = "runs"
+    with pytest.raises(_backends.RemoteNeedsMoonclip, match="could not open it"):
+        _backends.get_backend(config)
+    # On this machine's disk it is still the fallback it always was.
+    config.storage.type = "local"
+    assert isinstance(_backends.get_backend(config), _backends.TorchSaveBackend)

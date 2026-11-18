@@ -720,6 +720,13 @@ class RavexRuntime:
             return
         self._enabled = False
         logger.error("Ravex disabled (%s) - training continues unaffected", reason)
+        # "Unaffected" includes being stoppable: `shutdown` returns at once
+        # on a disabled runtime, so the handler it would have removed stayed,
+        # and SIGTERM set a flag nobody read until the SIGKILL (GPU-469).
+        try:
+            self._remove_signal_handler()
+        except Exception:  # pragma: no cover - defensive
+            pass
 
     @property
     def enabled(self) -> bool:
@@ -2897,6 +2904,11 @@ class RavexRuntime:
             self._resume_notice = resume_manager.notice
             if resumed:
                 self._announce_resume("resumed from step %d" % self.registry.step_count)
+                # What was just loaded is saved already: without this a run
+                # stopped before its first step wrote that step again, inside
+                # the grace a preemption leaves, and a crash loop spent the
+                # retention on copies of one checkpoint (GPU-469).
+                self._last_saved_step = self.registry.step_count
             if not resumed and self.config.require_resume:
                 raise NothingToResume(
                     "This run must resume (require_resume), and its store %s holds no "
