@@ -28,9 +28,9 @@ RNG on a resume.
 
 Its default checkpoint engine is [Moonclip](https://github.com/gpuzero-dev/moonclip),
 installed with `pip install "ravex[moonclip]"`. Moonclip publishes wheels for
-Linux on x86_64 and aarch64 and for macOS on Apple silicon (up to its 0.3.1,
-Linux x86_64 only); elsewhere it has to be built from source, and where it is
-not installed Ravex says so and falls back to `torch_save`.
+Linux on x86_64 and aarch64 and for macOS on Apple silicon; elsewhere it has
+to be built from source, and where it is not installed Ravex says so and falls
+back to `torch_save`.
 
 ## Use
 
@@ -204,8 +204,8 @@ count and the resume work: [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Versioning and compatibility
 
-Ravex is 0.x. A patch release (0.10.x) only fixes. A minor release may change
-an option's default or remove what was deprecated, each said in the
+Ravex is 0.x. A patch release (the last number) only fixes. A minor release
+may change an option's default or remove what was deprecated, each said in the
 CHANGELOG; what is removed warns for at least one minor release first. A
 newer Ravex resumes runs an older one wrote. An older one does not resume a
 newer one's checkpoint: it says so and starts from scratch, so pin a minor
