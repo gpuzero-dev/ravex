@@ -1236,6 +1236,10 @@ class DeltaExchange:
         #: link to pay for or a peer to stop waiting for.
         self.gather_wait = 0.0
         self._waits: Dict[int, float] = {}
+        #: When each peer last answered a request of ours, with anything -
+        #: a report, or "not yet" (GPU-443). A peer that stops answering at
+        #: all is gone, which no amount of asking again will change.
+        self._answered: Dict[int, float] = {}
 
         self._round = -1
         #: The newest round each peer has actually taken from this node. Not
@@ -1746,6 +1750,7 @@ class DeltaExchange:
             # peer's own round - and everything after it is bytes. See
             # `gather_wait`.
             self._waits[peer] = time.monotonic() - dialled
+            self._answered[peer] = time.monotonic()
             acknowledgement, status, length = RESPONSE.unpack(head)
 
             expect = RingLink._proof(
@@ -2117,6 +2122,10 @@ class DeltaExchange:
                               # for the length of the run. See adopt_outer_state.
         )
         _report.drop_rounds(self.state_path, KEEP_STATE)
+
+    def answered_at(self, peer: int) -> Optional[float]:
+        """When ``peer`` last answered this node, on ``time.monotonic()``'s clock, or None."""
+        return self._answered.get(peer)
 
     def fetch_state(self, peers: List[int], round_number: int, expected,
                     deadline: float):

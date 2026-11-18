@@ -443,7 +443,9 @@ def read(store, round_number: int, expected) -> Report:
     delta = {}
     for name, entry in tensors.items():
         want_dtype, want_shape = expected[name]
-        buffer = raw.get(name)
+        # Taken out of the dict as it is used: what is left of the snapshot
+        # is only what has not been read yet (GPU-443).
+        buffer = raw.pop(name, None)
         if buffer is None:
             raise ReportError("%s was described but not in the snapshot" % name)
         dtype = getattr(torch, want_dtype)
@@ -463,7 +465,14 @@ def read(store, round_number: int, expected) -> Report:
             continue
         try:
             flat = torch.frombuffer(buffer, dtype=torch.uint8).view(dtype)
-            delta[name] = flat.reshape(want_shape).clone()
+            # No clone (GPU-443): Moonclip hands each tensor over as a
+            # bytearray of its own, writable and owned by nobody else, and the
+            # tensor keeps it alive. A clone was a second copy of every report
+            # a node reads, beside the whole snapshot still in memory: on the
+            # seed of a 1B model, 7x its parameters on the node receiving it.
+            # A bytes object (immutable) is still cloned, as before.
+            tensor = flat.reshape(want_shape)
+            delta[name] = tensor if isinstance(buffer, bytearray) else tensor.clone()
         except (RuntimeError, ValueError) as exc:
             raise ReportError("%s could not be read: %s" % (name, exc)) from exc
 

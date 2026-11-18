@@ -622,3 +622,74 @@ def test_a_joiner_takes_the_model_s_step_count_with_its_parameters():
     joiner = OuterLoop(tiny_model(seed=1), inner_steps=4)
     apply_state(joiner, state_payload(member))
     assert joiner.model_steps == 1234
+
+
+class _SilentExchange:
+    """An exchange whose source never sends the state: answering "not yet"
+    when ``answers`` is set, gone otherwise (GPU-443)."""
+
+    def __init__(self, answers):
+        self.answers = answers
+        self.heard = None
+
+    def fetch_state(self, peers, round_number, expected, deadline):
+        if self.answers:
+            import time
+
+            self.heard = time.monotonic()
+        return None
+
+    def answered_at(self, peer):
+        return self.heard
+
+
+def test_a_source_that_stopped_answering_ends_the_job_instead_of_waiting(monkeypatch):
+    """GPU-443: node 0 died, and node 1 asked it for the seed every 0.2 s for
+    900 s, then would have trained alone. Silence past SOURCE_SILENCE is a
+    peer that is gone, and the job ends so its machine is given back."""
+    import time
+
+    from ravex._dist import membership
+
+    monkeypatch.setattr(membership, "SOURCE_SILENCE", 0.5)
+    loop = OuterLoop(tiny_model(), inner_steps=4)
+    started = time.monotonic()
+    with pytest.raises(membership.PeerSilent, match="node 0"):
+        membership.adopt_run_state(loop, _SilentExchange(answers=False), 0, 1, time.monotonic() + 60)
+    assert time.monotonic() - started < 10
+
+
+def test_a_source_still_writing_the_state_is_waited_for(monkeypatch):
+    """One that answers "not yet" is alive: only the run's deadline ends that wait."""
+    import time
+
+    from ravex._dist import membership
+
+    monkeypatch.setattr(membership, "SOURCE_SILENCE", 0.3)
+    loop = OuterLoop(tiny_model(), inner_steps=4)
+    assert membership.adopt_run_state(loop, _SilentExchange(answers=True), 0, 1, time.monotonic() + 1.0) is False
+
+
+def test_a_silent_peer_is_not_a_reason_to_train_alone(monkeypatch):
+    """The runtime lets PeerSilent end the job, as it does RegionUnreachable:
+    a loop that could not be built otherwise leaves the node training alone."""
+    from ravex import _runtime
+    from ravex._dist import membership
+
+    runtime = _runtime.RavexRuntime.__new__(_runtime.RavexRuntime)
+    runtime._outer = None
+    runtime.registry = type("Registry", (), {"models": [object()]})()
+
+    def gone(self):
+        raise membership.PeerSilent("node 0 is gone")
+
+    monkeypatch.setattr(_runtime.RavexRuntime, "_build_outer_loop", gone)
+    with pytest.raises(membership.PeerSilent):
+        runtime._outer_loop()
+
+    def other(self):
+        raise RuntimeError("no rendezvous")
+
+    monkeypatch.setattr(_runtime.RavexRuntime, "_build_outer_loop", other)
+    runtime._outer = None
+    assert runtime._outer_loop() is None and runtime._outer is False

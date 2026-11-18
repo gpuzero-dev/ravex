@@ -1111,6 +1111,44 @@ def seed_payload(loop) -> Dict[str, object]:
     return payload
 
 
+#: How long the node a run's starting state comes from may go without
+#: answering at all before this node gives up on it (GPU-443): no connection,
+#: no "not yet", nothing. A source still writing the state answers "not yet",
+#: so this is not how long the state may take; it is how long a node that is
+#: gone is waited for. 900 s of asking a dead peer every 0.2 s kept a rented
+#: GPU busy doing nothing, and would then have trained alone.
+SOURCE_SILENCE = 120.0
+
+
+class PeerSilent(RuntimeError):
+    """A peer this node cannot do without stopped answering (GPU-443).
+
+    Not a loop that could not be had, after which a node may train alone: the
+    run is several nodes, and the job ends so its machine is given back.
+    """
+
+
+def seed_expectation(loop) -> Dict[str, Tuple[str, Tuple[int, ...]]]:
+    """What :func:`seed_payload` would hold, by name, dtype and shape, without making it.
+
+    The momentum is described as the outer parameter it goes with, which is
+    what ``torch.zeros_like`` would have made of it.
+    """
+    def described(value) -> Tuple[str, Tuple[int, ...]]:
+        return str(value.dtype).replace("torch.", ""), tuple(value.shape)
+
+    expected: Dict[str, Tuple[str, Tuple[int, ...]]] = {}
+    buffers = getattr(loop.optimizer, "buffers", {}) or {}
+    for name, value in loop.outer.items():
+        expected[OUTER_PREFIX + name] = described(value)
+        buffer = buffers.get(name)
+        expected[MOMENTUM_PREFIX + name] = described(buffer if buffer is not None else value)
+    expected[MODEL_STEPS_KEY] = ("int64", ())
+    expected[INNER_STEPS_KEY] = ("int64", (2,))
+    expected[ROUND_KEY] = ("int64", ())
+    return expected
+
+
 def adopt_run_state(loop, exchange, source: int, rank: int, deadline: float) -> bool:
     """Make every node start from ``source``'s state: its outer parameters,
     its momentum, its round and its model's steps (GPU-212).
@@ -1130,8 +1168,8 @@ def adopt_run_state(loop, exchange, source: int, rank: int, deadline: float) -> 
     """
     from ravex._dist.exchange import SEED_ROUND
 
-    payload = seed_payload(loop)
     if rank == source:
+        payload = seed_payload(loop)
         exchange.publish_state(payload, SEED_ROUND)
         apply_state(loop, payload)
         loop.steps_this_round = 0
@@ -1140,11 +1178,23 @@ def adopt_run_state(loop, exchange, source: int, rank: int, deadline: float) -> 
     # joiner reads off the store which round to ask for - and the source may
     # still be writing it when the others ask, all of them having decided at
     # the same moment who it is.
-    expected = _expectation(payload)
+    # Described, not built: the payload of a loop that has never stepped holds
+    # a zero momentum the size of the model, made only to be measured
+    # (GPU-443).
+    expected = seed_expectation(loop)
     state = None
+    started = time.monotonic()
     while state is None and time.monotonic() < deadline:
         state = exchange.fetch_state([source], SEED_ROUND, expected, deadline)
         if state is None:
+            heard = exchange.answered_at(source)
+            silent = time.monotonic() - (heard if heard is not None else started)
+            if silent > SOURCE_SILENCE:
+                raise PeerSilent(
+                    "node %d, which the run's starting state comes from, has not "
+                    "answered for %.0fs: it is gone. Ending this job rather than "
+                    "waiting for it or training alone" % (source, silent)
+                )
             time.sleep(0.2)
     if state is None:
         return False

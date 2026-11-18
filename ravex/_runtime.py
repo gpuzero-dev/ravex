@@ -414,6 +414,12 @@ class RavexRuntime:
 
             check_moonclip_version()
 
+        # Before the first save allocates anything large, so memory a save
+        # frees goes back to the system (GPU-443, ravex._memory).
+        from ravex._memory import hold_the_threshold
+
+        hold_the_threshold()
+
         try:
             from ravex._frameworks import detect_framework, get_adapter
 
@@ -1476,13 +1482,16 @@ class RavexRuntime:
             return None
 
         from ravex._dist.exchange import RegionUnreachable
+        from ravex._dist.membership import PeerSilent
 
         try:
             self._outer = self._build_outer_loop()
-        except RegionUnreachable:
+        except (RegionUnreachable, PeerSilent):
             # Not a loop that could not be had but a run that must not go on:
             # training this node alone is the two halves it exists to prevent
-            # (GPU-233). The exchanges' threads are daemons and go with it.
+            # (GPU-233), and a peer that is gone is not coming back to this
+            # job (GPU-443). The job ends, and its machine with it. The
+            # exchanges' threads are daemons and go with it.
             raise
         except Exception as exc:
             logger.warning(
@@ -1713,18 +1722,18 @@ class RavexRuntime:
         taken, so the checkpoint at step ``k`` already holds the weights the
         state saved at ``k`` goes with, and so does every one after it until
         the next round closes. Written by whichever process writes the
-        checkpoints. Copied first: the save returns before the write and the
-        tensors are the live ones.
+        checkpoints. Not copied here (GPU-443): both backends take their own
+        copy before ``save`` returns - Moonclip its shadow copy, ``torch_save``
+        a ``_cpu_copy`` - so a copy here was the whole state twice over, on a
+        state that is already in host memory.
         """
         if not self._enabled or not (self._per_rank_active() or is_main_process()):
             return
         step = int(self.registry.step_count)
         try:
-            from ravex._backends import _cpu_copy
-
             self._outer_store_backend().save(
                 step,
-                _cpu_copy(loop.state_dict()),
+                loop.state_dict(),
                 {"step": str(step), "round": str(int(loop.round_number))},
             )
         except Exception as exc:
