@@ -130,3 +130,71 @@ class TestCheckpointsReachTheBucketAsTheyAreWritten:
         assert seen.get("max_full_snapshots") == 12, (
             "every snapshot is a full one, and Moonclip's own cap on fulls is five"
         )
+
+
+def loader_script(epochs, seen, warm_up=False):
+    """The loop most scripts have: ``for batch in loader`` and nothing of
+    Ravex's before it, so the resume and the checkpoints happen inside the
+    dataloader's wrappers. Four steps an epoch."""
+    torch.manual_seed(0)
+    model = torch.nn.Linear(4, 2)
+    data = torch.utils.data.DataLoader(torch.utils.data.TensorDataset(torch.randn(8, 4)), batch_size=2)
+    if warm_up:
+        # A pass over the data before the optimizer exists, with the model
+        # already known to Ravex.
+        ravex.track(model=model)
+        with torch.no_grad():
+            for (batch,) in data:
+                model(batch)
+    optimizer = torch.optim.SGD(model.parameters(), lr=0.1, momentum=0.9)
+    for _ in range(epochs):
+        for (batch,) in data:
+            model(batch).sum().backward()
+            optimizer.step()
+            seen.setdefault("first", ravex.step() - 1)
+            optimizer.zero_grad()
+
+
+class TestWithADataLoader:
+    """GPU-458: the wrappers around the dataloader caught everything, so the
+    errors that stop a run were a warning there, and the run trained from
+    step 0 over its own history."""
+
+    def test_an_empty_store_stops_the_run_before_any_step(self, storage):
+        seen = {}
+        loop = ravex.train_loop(backend="torch_save", checkpoint_every=2, require_resume=True)
+        with pytest.raises(NothingToResume, match="must resume"):
+            loop(lambda: loader_script(1, seen))()
+        assert "first" not in seen, "a run that must resume trained from scratch"
+
+    def test_a_store_with_a_checkpoint_carries_on(self, storage):
+        ravex.train_loop(backend="torch_save", checkpoint_every=2)(lambda: loader_script(1, {}))()
+        seen = {}
+        ravex.train_loop(backend="torch_save", checkpoint_every=2, require_resume=True)(
+            lambda: loader_script(1, seen)
+        )()
+        assert seen["first"] == 4
+
+    def test_a_pass_before_the_optimizer_exists_does_not_resume_the_model_alone(self, storage):
+        ravex.train_loop(backend="torch_save", checkpoint_every=2)(lambda: loader_script(1, {}))()
+        seen = {}
+        resumed = {}
+
+        def script():
+            loader_script(1, seen, warm_up=True)
+
+        import ravex._runtime as runtime_module
+
+        original = runtime_module.RavexRuntime._try_resume
+
+        def spy(self, *args, **kwargs):
+            resumed["optimizers"] = len(self.registry.optimizers)
+            return original(self, *args, **kwargs)
+
+        runtime_module.RavexRuntime._try_resume = spy
+        try:
+            ravex.train_loop(backend="torch_save", checkpoint_every=2, require_resume=True)(script)()
+        finally:
+            runtime_module.RavexRuntime._try_resume = original
+        assert resumed["optimizers"] == 1, "the resume ran before there was an optimizer to restore"
+        assert seen["first"] == 4

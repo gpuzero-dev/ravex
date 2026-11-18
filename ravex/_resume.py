@@ -231,6 +231,31 @@ class NothingToResume(Exception):
     """
 
 
+class ResumeRefused(RuntimeError):
+    """The checkpoint a run was asked by name to continue from - a fork, a
+    restart with its own hyperparameters, a run that must resume - does not
+    fit it. Starting from scratch instead would file a new model under the
+    old run's history, so the run stops. A ``RuntimeError``, as it was before
+    it had a name of its own (GPU-458)."""
+
+
+def stops_the_run(exc: BaseException, config) -> bool:
+    """Whether ``exc``, out of a resume or a checkpoint, is the runtime
+    stopping the run on purpose, and not a fault a run is protected from.
+
+    The runtime decides which is which where it knows why: a resume that
+    could not be had logs and starts from scratch unless it was asked for by
+    name, and a failed checkpoint costs that checkpoint unless
+    ``fallback_on_error`` is off. The dataloader's wrappers sit around both
+    and caught everything, so with a ``for batch in loader`` loop - most
+    loops - a run that had to resume logged "Resume hook failed" and trained
+    from step 0 over its own history, which is the very thing those errors
+    exist to prevent (GPU-458). They ask this before they swallow."""
+    if isinstance(exc, (NothingToResume, ResumeStepMissing, ResumeRefused)):
+        return True
+    return not getattr(config, "fallback_on_error", True)
+
+
 class ResumeStepMissing(Exception):
     """``resume_step`` named a step the store does not hold.
 

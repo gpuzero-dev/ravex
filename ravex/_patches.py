@@ -44,6 +44,8 @@ import functools
 import logging
 from typing import Any, Callable, List, Tuple
 
+from ravex._resume import stops_the_run
+
 logger = logging.getLogger("ravex")
 
 _PATCH_FLAG = "_ravex_patched"
@@ -275,6 +277,8 @@ def _patch_dataloader(patches: PatchSet, registry, runtime, torch) -> None:
                 logger.info("Step budget reached - yielding an empty epoch")
                 return iter(())
         except Exception as exc:
+            if stops_the_run(exc, getattr(runtime, "config", None)):
+                raise
             logger.warning("Resume hook failed: %s", exc)
 
         iterator = original_iter(self)
@@ -371,6 +375,8 @@ class _BatchBoundaryIterator:
         except StopIteration:
             raise
         except Exception as exc:
+            if stops_the_run(exc, getattr(self._runtime, "config", None)):
+                raise
             logger.warning("Checkpoint at batch boundary failed: %s", exc)
 
         try:

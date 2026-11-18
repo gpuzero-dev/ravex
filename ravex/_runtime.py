@@ -41,7 +41,7 @@ from ravex._dist.collectives import (
 )
 from ravex._patches import install_all_patches
 from ravex._registry import ObjectRegistry
-from ravex._resume import NothingToResume, ResumeManager, ResumeStepMissing
+from ravex._resume import NothingToResume, ResumeManager, ResumeRefused, ResumeStepMissing
 
 logger = logging.getLogger("ravex")
 
@@ -2794,6 +2794,13 @@ class RavexRuntime:
     def after_dataloader_iter(self) -> None:
         """Called once the loader's iterator exists.
 
+        if not self.registry.optimizers:
+            # Not yet, as `resume_if_ready` waits: a pass over the loader
+            # before the optimizer is built - an evaluation, a warm-up of the
+            # data - resumed the model alone, and the optimizer made after it
+            # started from nothing under a step counter that said otherwise
+            # (GPU-458). The loop's own `iter(loader)` comes back here.
+            return
         Constructing it draws a worker base seed from the global RNG, so the
         restored RNG state is applied here rather than in
         :meth:`on_dataloader_iter` — otherwise the first resumed step would run
@@ -2913,7 +2920,7 @@ class RavexRuntime:
                 # model was changed - starting from scratch would be a new
                 # model filed under the old run's history, which is a corrupt
                 # run and not a restart. Stop, and say why.
-                raise RuntimeError(
+                raise ResumeRefused(
                     "The checkpoint this run was asked to continue from does not fit it (%s). "
                     "If a parameter that changes the model was changed, start a new run "
                     "from scratch instead" % exc
