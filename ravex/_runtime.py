@@ -326,7 +326,27 @@ class RavexRuntime:
         #: For the automatic step metrics: the step and the clock at the last
         #: record, so the time per step is an average over the interval rather
         #: than the one step that happened to land on the cadence.
-        self._metrics_mark: Optional[Tuple[int, float]] = None
+        self._metrics_mark: Optional[Tuple[int, float, int]] = None
+        #: Tokens the watched models were called with in training, counted at
+        #: their forward from the token ids' shape (GPU-436), and the last
+        #: sequence length and autocast dtype seen there, for the MFU.
+        self._tokens = 0
+        self._sequence: Optional[int] = None
+        self._autocast_dtype: Any = None
+        #: The MFU's per-token cost and the GPU's peak, worked out at the
+        #: first throughput point; False when this run has none to report.
+        self._flops: Any = None
+        #: Per model: the parameters charted per layer (GPU-436), worked out
+        #: once, and the hooks on the blocks whose outputs are charted.
+        self._layer_params: Dict[int, List[Tuple[str, Any]]] = {}
+        self._activation_hooks: List[Any] = []
+        #: Up while the forward of a histogram step runs: the watched blocks
+        #: chart their outputs into `_activations`, once each.
+        self._activations_due = False
+        self._activations: Dict[str, Any] = {}
+        #: Samples of the charted parameters taken before a histogram step's
+        #: `optimizer.step()`, for the update-to-weight ratios (GPU-436).
+        self._update_samples: List[Tuple[str, Any, Any]] = []
         #: Whether this process takes the gradient norm and the parameter
         #: histograms: settled at the first step they are due, once the
         #: process group is up and the models are known (GPU-274).
@@ -890,22 +910,106 @@ class RavexRuntime:
             pass
         for model in models:
             try:
-                self._iteration_hooks[id(model)] = model.register_forward_pre_hook(hook, prepend=True)
+                # With the keyword arguments, where a Hugging Face model gets
+                # its `input_ids`: the tokens the throughput counts (GPU-436).
+                self._iteration_hooks[id(model)] = model.register_forward_pre_hook(
+                    hook, prepend=True, with_kwargs=True
+                )
             except TypeError:
-                # torch before 2.0 has no `prepend`.
+                # torch before 2.0 has neither `prepend` nor `with_kwargs`.
                 self._iteration_hooks[id(model)] = model.register_forward_pre_hook(hook)
+            self._watch_activations(model)
 
-    def _forward_boundary(self, _module: Any, _args: Any) -> None:
-        if self._iteration_armed and self._enabled and not self._shutdown_done:
+    def _forward_boundary(self, module: Any, args: Any, kwargs: Any = None) -> None:
+        if not self._enabled or self._shutdown_done:
+            return
+        if self._iteration_armed:
             self.on_batch_boundary()
+        if self._metrics is not None and getattr(module, "training", False):
+            self._count_tokens(args, kwargs)
+
+    def _count_tokens(self, args: Any, kwargs: Any) -> None:
+        """Count the tokens of a forward in training, from the ids' shape (GPU-436).
+
+        A forward under ``no_grad`` is an evaluation, whose tokens are no
+        training throughput. Only shapes are read: no wait for the GPU.
+        """
+        try:
+            import torch
+
+            if not torch.is_grad_enabled():
+                return
+            from ravex._pretraining import token_ids
+
+            ids = token_ids(args or (), kwargs)
+            if ids is None:
+                return
+            self._tokens += int(ids.numel())
+            self._sequence = int(ids.shape[-1]) if ids.dim() > 0 else None
+            self._autocast_dtype = _autocast_dtype(torch, ids.device.type)
+            # The forward of a histogram step: its blocks' outputs are charted.
+            every = self.config.histograms_every
+            if (
+                self.config.training_metrics and every > 0
+                and (self.registry.step_count + 1) % every == 0
+                and not self._activations
+            ):
+                self._activations_due = True
+        except Exception as exc:
+            logger.debug("Could not count the tokens of a forward: %s", exc)
+
+    def _watch_activations(self, model: Any) -> None:
+        """Chart the outputs of the first, middle and last block (GPU-436).
+
+        A forward hook per block that does nothing but test a flag, except in
+        the forward of a histogram step. Not on a compiled model: a hook that
+        sometimes works is a graph that recompiles, which costs more than any
+        chart is worth.
+        """
+        if not self.config.training_metrics or self.config.histograms_every <= 0:
+            return
+        try:
+            from ravex._dist.collectives import unwrap_model
+            from ravex._pretraining import _blocks
+
+            if _compiled(model):
+                logger.info("No activation histograms: the model is compiled.")
+                return
+            name, blocks = _blocks(unwrap_model(model))
+            for index in sorted({0, len(blocks) // 2, len(blocks) - 1}) if blocks else []:
+                block = blocks[index]
+                if _compiled(block):
+                    continue
+                key = "train/activations/" + ("%s.%d" % (name, index) if name else str(index))
+                self._activation_hooks.append(block.register_forward_hook(self._activation_hook(key)))
+        except Exception as exc:
+            logger.debug("Could not watch the activations of %s: %s", type(model).__name__, exc)
+
+    def _activation_hook(self, key: str) -> Any:
+        def hook(_module: Any, _args: Any, output: Any) -> None:
+            if not self._activations_due or key in self._activations:
+                return
+            tensor = output[0] if isinstance(output, (tuple, list)) and output else output
+            dtype = getattr(tensor, "dtype", None)
+            if dtype is None or not dtype.is_floating_point:
+                return
+            from ravex._metrics import _histogram
+
+            try:
+                self._activations[key] = _histogram(tensor)
+            except Exception as exc:
+                logger.debug("Could not chart %s: %s", key, exc)
+
+        return hook
 
     def unwatch_iterations(self) -> None:
-        for handle in self._iteration_hooks.values():
+        for handle in list(self._iteration_hooks.values()) + self._activation_hooks:
             try:
                 handle.remove()
             except Exception:  # pragma: no cover - defensive
                 pass
         self._iteration_hooks.clear()
+        self._activation_hooks = []
 
     def resume_if_ready(self) -> None:
         """Resume now if it has not happened and the run can be restored.
@@ -968,6 +1072,10 @@ class RavexRuntime:
         """Queue already-prepared metrics. See `ravex.log_metrics`."""
         if self._metrics is None or not self._enabled:
             return
+        from ravex._pretraining import with_perplexity
+
+        # Beside the loss, under the names charts look for (GPU-436).
+        values = with_perplexity(values)
         local_step = self.registry.step_count if step is None else int(step)
         if self._round_means is not None:
             # A multi-node run: the model's metrics, averaged over the nodes
@@ -1137,19 +1245,30 @@ class RavexRuntime:
         step = self.registry.step_count
         now = time.perf_counter()
         if self._metrics_mark is None:
-            self._metrics_mark = (step, now)
+            self._metrics_mark = (step, now, self._tokens)
             return
         if step % self.config.metrics_every != 0:
             return
         from ravex._metrics import prepare
 
-        mark_step, mark_time = self._metrics_mark
-        self._metrics_mark = (step, now)
+        mark_step, mark_time, mark_tokens = self._metrics_mark
+        self._metrics_mark = (step, now, self._tokens)
         values: Dict[str, Any] = {}
         if step > mark_step:
             values["train/step_seconds"] = prepare(
                 "train/step_seconds", (now - mark_time) / (step - mark_step)
             )
+        tokens = self._tokens - mark_tokens
+        if tokens > 0 and now > mark_time:
+            # This process's tokens over its own time: per GPU, with no
+            # collective, since each rank feeds its one GPU its own batch.
+            from ravex._pretraining import MFU, TOKENS_PER_SECOND
+
+            rate = tokens / (now - mark_time)
+            values[TOKENS_PER_SECOND] = prepare(TOKENS_PER_SECOND, rate)
+            flops = self._model_flops()
+            if flops:
+                values[MFU] = prepare(MFU, flops.mfu(rate, self._sequence))
         groups = getattr(optimizer, "param_groups", None) or []
         for index, group in enumerate(groups):
             lr = group.get("lr") if isinstance(group, dict) else None
@@ -1162,6 +1281,45 @@ class RavexRuntime:
                 continue
         if values:
             self.log_metrics(values, step)
+
+    def _model_flops(self) -> Any:
+        """What a token costs the watched models, and the GPU's peak for it (GPU-436).
+
+        Settled once. False off CUDA, on a GPU or a dtype
+        :data:`ravex._pretraining.PEAKS` has no peak for, and on a sharded
+        model, whose rank holds a fraction of the parameters it would count.
+        """
+        if self._flops is not None:
+            return self._flops
+        self._flops = False
+        try:
+            import torch
+
+            if not torch.cuda.is_available() or self.registry.has_sharded_models():
+                return self._flops
+            from ravex._dist.collectives import unwrap_model
+            from ravex._pretraining import Flops, flops_for, peaks_for
+
+            name = torch.cuda.get_device_name(torch.cuda.current_device())
+            peaks = peaks_for(name)
+            if peaks is None:
+                logger.info("No MFU: %s is not in Ravex's table of GPU peaks.", name)
+                return self._flops
+            tf32 = bool(torch.backends.cuda.matmul.allow_tf32) or (
+                torch.get_float32_matmul_precision() != "highest"
+            )
+            models = [m for m in self.registry.models if id(m) in self._iteration_hooks]
+            found = [flops_for(unwrap_model(m), peaks, self._autocast_dtype, tf32) for m in models]
+            parts = [part for part in found if part is not None]
+            if not parts or len(parts) != len(found):
+                return self._flops
+            per_token = sum(part.per_token for part in parts)
+            seconds = sum(part.per_token / part.peak_tflops for part in parts)
+            attention = sum(part.attention_per_position for part in parts)
+            self._flops = Flops(per_token, attention, per_token / seconds)
+        except Exception as exc:
+            logger.debug("Could not work out the model's FLOPs: %s", exc)
+        return self._flops
 
     def note_grad_norm(self, norm: Any) -> None:
         """Keep what ``clip_grad_norm_`` returned, for this step's chart (GPU-274).
@@ -1202,6 +1360,32 @@ class RavexRuntime:
         histograms_due = every > 0 and step % every == 0
         if not (norm_due or histograms_due):
             return
+        samples, self._update_samples = self._update_samples, []
+        activations, self._activations = self._activations, {}
+        self._activations_due = False
+        if not self._training_metrics_applies():
+            return
+        from ravex._metrics import combined_norm, grad_norm, parameter_histograms, prepare, update_ratios
+
+        values: Dict[str, Any] = {}
+        try:
+            if norm_due:
+                norm = combined_norm(noted) if noted else grad_norm(optimizer)
+                if norm is not None:
+                    values["train/grad_norm"] = prepare("train/grad_norm", norm)
+            if histograms_due:
+                values.update(parameter_histograms(self._charted(optimizer)))
+                values.update(update_ratios(samples))
+                values.update(activations)
+        except Exception as exc:
+            # A chart missing a point is the whole cost; the step went through.
+            logger.debug("Could not take the training metrics at step %d: %s", step, exc)
+            return
+        if values:
+            self.log_metrics(values, step)
+
+    def _training_metrics_applies(self) -> bool:
+        """Whether this process takes the training metrics, settled once (GPU-274)."""
         if self._training_metrics_apply is None:
             from ravex._dist.collectives import get_rank
 
@@ -1212,24 +1396,58 @@ class RavexRuntime:
                     "model is sharded, and this rank holds only its shard."
                 )
             self._training_metrics_apply = get_rank() == 0 and not sharded
-        if not self._training_metrics_apply:
-            return
-        from ravex._metrics import combined_norm, grad_norm, parameter_histograms, prepare
+        return self._training_metrics_apply
 
-        values: Dict[str, Any] = {}
-        try:
-            if norm_due:
-                norm = combined_norm(noted) if noted else grad_norm(optimizer)
-                if norm is not None:
-                    values["train/grad_norm"] = prepare("train/grad_norm", norm)
-            if histograms_due:
-                values.update(parameter_histograms(self.registry.models, optimizer))
-        except Exception as exc:
-            # A chart missing a point is the whole cost; the step went through.
-            logger.debug("Could not take the training metrics at step %d: %s", step, exc)
+    def _charted(self, optimizer: Any) -> List[Tuple[str, Any]]:
+        """The parameters charted per layer that ``optimizer`` steps (GPU-436), in the models' names."""
+        from ravex._dist.collectives import unwrap_model
+        from ravex._pretraining import layer_parameters
+
+        stepped = {
+            id(param)
+            for group in getattr(optimizer, "param_groups", None) or []
+            for param in group.get("params", [])
+        }
+        models = self.registry.models
+        out: List[Tuple[str, Any]] = []
+        for index, model in enumerate(models):
+            chosen = self._layer_params.get(id(model))
+            if chosen is None:
+                try:
+                    chosen = layer_parameters(unwrap_model(model))
+                except Exception as exc:
+                    logger.debug("Could not choose the layers of %s: %s", type(model).__name__, exc)
+                    chosen = []
+                self._layer_params[id(model)] = chosen
+            prefix = "" if len(models) == 1 else "model%d." % index
+            out.extend((prefix + name, param) for name, param in chosen if id(param) in stepped)
+        return out
+
+    def before_step(self, optimizer: Any) -> None:
+        """Before a histogram step's ``optimizer.step()``: sample the charted weights (GPU-436).
+
+        The update-to-weight ratio needs the weights before the step and
+        after: a strided copy of a few thousand elements of each charted
+        parameter, on the device, and only on the steps that chart.
+        """
+        if not self._enabled or self._restoring or self._metrics is None or not self.config.training_metrics:
             return
-        if values:
-            self.log_metrics(values, step)
+        if self._leader_optimizer_id is not None and id(optimizer) != self._leader_optimizer_id:
+            return
+        every = self.config.histograms_every
+        if every <= 0 or (self.registry.step_count + 1) % every != 0:
+            return
+        try:
+            if not self._training_metrics_applies():
+                return
+            from ravex._metrics import update_sample
+
+            self._update_samples = [
+                (name, param, update_sample(param)) for name, param in self._charted(optimizer)
+            ]
+        except Exception as exc:
+            logger.debug("Could not sample the weights before a step: %s", exc)
+            self._update_samples = []
 
     # ─── the outer loop, GPU-113 ────────────────────────────────────────
 
@@ -4528,3 +4746,23 @@ def reset_runtime() -> None:
             if hasattr(torch.nn.Module, "_ravex_patched"):
                 delattr(torch.nn.Module, "_ravex_patched")
         _runtime = None
+
+
+def _autocast_dtype(torch: Any, device: str) -> Any:
+    """The dtype autocast computes in on ``device`` now, or None when it is off."""
+    try:
+        if not torch.is_autocast_enabled(device):
+            return None
+        return torch.get_autocast_dtype(device)
+    except TypeError:
+        # torch before 2.4 takes no device and has a getter per device type.
+        if device == "cuda" and torch.is_autocast_enabled():
+            return torch.get_autocast_gpu_dtype()
+        return None
+    except Exception:
+        return None
+
+
+def _compiled(module: Any) -> bool:
+    """Whether ``module`` runs as a compiled graph: wrapped by ``torch.compile``, or compiled in place."""
+    return getattr(module, "_orig_mod", None) is not None or getattr(module, "_compiled_call_impl", None) is not None

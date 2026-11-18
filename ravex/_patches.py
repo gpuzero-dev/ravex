@@ -172,6 +172,11 @@ def _attach_step_hook(optimizer, runtime) -> None:
     register = getattr(optimizer, "register_step_post_hook", None)
     if callable(register):
         register(lambda opt, args, kwargs: runtime.on_step(opt))
+        # Before the step too, for what has to be seen on both sides of it:
+        # the update-to-weight ratios (GPU-436). Same version of torch.
+        register_pre = getattr(optimizer, "register_step_pre_hook", None)
+        if callable(register_pre):
+            register_pre(lambda opt, args, kwargs: runtime.before_step(opt))
         optimizer._ravex_hooked = True
         return
 

@@ -172,11 +172,10 @@ def _histogram(tensor: Any) -> Histogram:
     return Histogram(low, high, counts[:HISTOGRAM_BINS], counts[HISTOGRAM_BINS], stride)
 
 
-#: How many parameters get their weights and gradients charted (GPU-274): the
-#: largest, which in a transformer are the embedding, the head and the widest
-#: projections - where a run going wrong shows first, and few enough that the
-#: cost stays a few capped reductions however deep the model is.
-HISTOGRAM_PARAMETERS = 4
+#: How many elements of a charted parameter the update-to-weight ratio is
+#: taken over (GPU-436): a strided sample, so the copy before the step is a
+#: few kilobytes per parameter whatever its size.
+UPDATE_SAMPLE_ELEMENTS = 1 << 16
 
 
 def _gradients(optimizer: Any) -> List[Any]:
@@ -231,39 +230,49 @@ def combined_norm(norms: List[Any]) -> Any:
     )
 
 
-def parameter_histograms(models: List[Any], optimizer: Any) -> Dict[str, Any]:
-    """``train/weights/<name>`` and ``train/grads/<name>`` of the largest stepped parameters.
+def parameter_histograms(charted: List[Tuple[str, Any]]) -> Dict[str, Any]:
+    """``train/weights/<name>`` and ``train/grads/<name>`` of each charted parameter.
 
-    Named after the models Ravex tracks, so a chart says ``embed.weight``
-    rather than a position; a parameter no tracked model owns is ``param<N>``.
-    Each histogram is :func:`_histogram`'s, capped at
-    :data:`HISTOGRAM_MAX_ELEMENTS` sampled elements whatever the tensor's size.
+    ``charted`` is :func:`ravex._pretraining.layer_parameters`' choice, in the
+    model's own names (GPU-436): the embedding, attention and MLP of the
+    first, middle and last block, the final norm and the head. Each histogram
+    is :func:`_histogram`'s, capped at :data:`HISTOGRAM_MAX_ELEMENTS` sampled
+    elements whatever the tensor's size.
     """
-    from ravex._dist.collectives import unwrap_model
-
-    names: Dict[int, str] = {}
-    for index, model in enumerate(models):
-        prefix = "" if len(models) == 1 else "model%d." % index
-        try:
-            for name, param in unwrap_model(model).named_parameters():
-                names.setdefault(id(param), prefix + name)
-        except Exception as exc:
-            logger.debug("Could not name the parameters of %s: %s", type(model).__name__, exc)
-    params = [
-        param
-        for group in getattr(optimizer, "param_groups", None) or []
-        for param in group.get("params", [])
-    ]
-    largest = sorted(enumerate(params), key=lambda item: item[1].numel(), reverse=True)
     out: Dict[str, Any] = {}
-    for position, param in largest[:HISTOGRAM_PARAMETERS]:
-        if param.numel() < 2:
-            continue
-        name = names.get(id(param), "param%d" % position)
+    for name, param in charted:
         out["train/weights/" + name] = _histogram(param)
         grad = getattr(param, "grad", None)
         if grad is not None and not grad.is_sparse:
             out["train/grads/" + name] = _histogram(grad)
+    return out
+
+
+def update_sample(param: Any) -> Any:
+    """A strided copy of ``param``'s elements, taken before the step (GPU-436)."""
+    flat = param.detach().reshape(-1)
+    stride = max(1, -(-flat.numel() // UPDATE_SAMPLE_ELEMENTS))
+    return flat[::stride].float().clone()
+
+
+def update_ratios(samples: List[Tuple[str, Any, Any]]) -> Dict[str, Any]:
+    """``train/updates/<name>``: how far a step moved each charted parameter, relative to its size.
+
+    ``||after - before|| / ||before||`` over the same sampled elements: the
+    learning rate's effect as the weights feel it, which an optimizer's own
+    ``lr`` does not say - around 1e-3 is the usual healthy order, far above
+    is a step too large for the weights, far below is a layer that has
+    stopped learning. Queued on the device like every metric.
+    """
+    import torch
+
+    out: Dict[str, Any] = {}
+    for name, param, before in samples:
+        after = update_sample(param)
+        if after.shape != before.shape:
+            continue
+        ratio = torch.linalg.vector_norm(after - before) / torch.linalg.vector_norm(before).clamp_min(1e-30)
+        out["train/updates/" + name] = Scalar(ratio)
     return out
 
 
@@ -709,10 +718,14 @@ def model_means(reports: List[Tuple[int, Mapping[str, Any]]]) -> Dict[str, float
             slot[1] += max(int(steps), 0)
             slot[2] += mean
             slot[3] += 1
-    return {
+    from ravex._pretraining import mean_perplexity
+
+    # The model's perplexity is that of its mean loss, not the mean of the
+    # nodes' perplexities (GPU-436).
+    return mean_perplexity({
         key: (weighted / weight if weight > 0 else plain / count)
         for key, (weighted, weight, plain, count) in sums.items()
-    }
+    })
 
 
 def _environment_rank(name: str) -> Optional[int]:

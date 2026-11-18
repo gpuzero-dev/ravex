@@ -810,9 +810,52 @@ every checkpoint, and every `system_metrics_every` seconds `sys/gpu<N>/…`,
 needs `nvidia-ml-py`; without it only this process's GPU memory is reported.
 CPU and RAM need `psutil`.
 
-Every `histograms_every` steps come the histograms of the four largest
-parameters the optimizer steps, `train/weights/<name>` and `train/grads/<name>`, named
-after the tracked model (`train/weights/embed.weight`). The gradient norm and the
+**Pre-training metrics** (GPU-436), with nothing in the script either:
+
+- `perf/tokens_per_s_per_gpu`, every `metrics_every` steps: the tokens the
+  trained model was called with, over this process's time. Counted at the
+  model's forward from the shape of its token ids - `input_ids` by name, else
+  the first integer tensor - in every forward in training, micro-batches
+  included, and not in a forward under `no_grad`, which is an evaluation. A
+  model fed no integer tensor (an image model, embeddings computed outside it)
+  gets no throughput.
+- `perf/mfu`, beside it: the model's FLOPs per token times the tokens per
+  second, over the GPU's peak. The FLOPs are `6 x` the parameters that
+  multiply (all the trainable ones but an embedding's lookup table), plus
+  `12 x layers x width x sequence` for the attention when the model has a
+  Hugging Face style `config` (`num_hidden_layers`, `hidden_size`). The peak
+  is the datasheet's dense figure for the GPU, per dtype, and each parameter
+  is charged at the dtype it is multiplied in: autocast's when the forward runs
+  under it, else its own, so a model whose components compute at different
+  precisions gets the peak of that mix. That is the compute dtype, not the one
+  a component is saved at (`ravex.save_dtype`). Without the GPU in Ravex's
+  table (H100, H200, A100, A10, A40, L4, L40S, RTX 3090 and 4090, MI300X), off
+  CUDA, or on a sharded model, there is no MFU: a guessed number is worse than
+  none.
+- `train/ppl` and `val/ppl`: `exp` of what the script logs as `train/loss` and
+  `val/loss`, at the same steps. Ravex does not see the loss on its own, so
+  these come only with the script's `log_metrics`; log the loss under those
+  two names. In a multi-node run the model's series has the perplexity of the
+  mean loss.
+
+Every `histograms_every` steps come the histograms **per layer**, named after
+the tracked model's parameters: `train/weights/<name>` and `train/grads/<name>`
+of the embedding, of attention and MLP in the first, middle and last block, and
+of what follows the blocks - the final norm and the output head
+(`train/weights/blocks.0.attn.q_proj.weight`). The blocks are found by
+structure, as the model's longest `ModuleList` of one class; a model without
+one gets its four largest parameters instead. Beside them,
+`train/updates/<name>` is how far that step moved each of those parameters
+relative to its size, `||after - before|| / ||before||` over a sample of its
+elements: around `1e-3` is the usual healthy order, far above is a learning
+rate too high for that layer, far below a layer that stopped learning. And
+`train/activations/<blocks>.<i>` is the output of the first, middle and last
+block in that step's forward; not on a compiled model, where a hook that only
+sometimes works would make the graph recompile. However deep the model, the
+same few parameters are charted, and each tensor is sampled down to a fixed
+size: the cost of a histogram step does not grow with the model.
+
+The gradient norm and the
 histograms are taken right after `optimizer.step()`, from the gradients the
 step used - unscaled already under a `GradScaler`. A script that clips with
 `torch.nn.utils.clip_grad_norm_` gets the norm that call returned, the one
@@ -822,8 +865,10 @@ queued on the device, never read back on the training thread. With
 several optimizers they come from the one that drives the step count. A sharded
 model (FSDP) gets neither: rank 0 holds one shard, and gathering the rest would
 be a collective. The loss is not among them, because Ravex does not see it
-without wrapping `backward()`: that one line stays the script's.
-`training_metrics: false` turns both off.
+without wrapping `backward()`: that one line stays the script's, as
+`train/loss`, and `val/loss` for an evaluation. `training_metrics: false` turns
+off the norm and everything per layer; the throughput, the MFU and the
+perplexity stay with `metrics`.
 
 **In a multi-node run, the model's metrics** (`outer_loop: true`). Every node
 computes its own loss, on its own shard, at its own step count, and a run is

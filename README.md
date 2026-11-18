@@ -112,6 +112,16 @@ does not say so. Importing Ravex does nothing until a decorated function is
 called, and its patches on PyTorch come off when that function returns or
 raises.
 
+**What it charts on its own.** With nothing in the script but the decorator:
+the learning rate, the time per step and the gradient norm; for a language
+model the tokens per second per GPU and the MFU (on a GPU Ravex knows the peak
+of); histograms per layer of the weights, the gradients, the update-to-weight
+ratio and the activations, for the embedding, the first, middle and last block
+and the head; and the machine's GPU, CPU and memory. Log the loss as
+`train/loss` (and `val/loss`) with `ravex.log_metrics` and the perplexity comes
+with it. The full list, and how each is measured, is in
+[docs/configuration.md](docs/configuration.md#metrics).
+
 When "noticed on its own" is a guess, such as two models of which only one
 trains, or an optimizer built before the function was entered, name it with
 `ravex.track(model, optimizer)`. The one moment a checkpoint is consistent,

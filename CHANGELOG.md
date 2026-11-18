@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **The metrics a pre-training run is judged by, with nothing in the script
+  (GPU-436).** `perf/tokens_per_s_per_gpu`, counted from the token ids the
+  model is called with; `perf/mfu`, against the datasheet's peak of the GPU for
+  the dtype each part of the model computes in, and only on a GPU in Ravex's
+  table; and `train/ppl` and `val/ppl` beside the `train/loss` and `val/loss`
+  the script logs.
+- **Histograms per layer.** The embedding, attention and MLP of the first,
+  middle and last block, the final norm and the head, in place of the four
+  largest parameters; beside them, each one's update-to-weight ratio
+  (`train/updates/<name>`) and the blocks' outputs
+  (`train/activations/<blocks>.<i>`). The same few parameters however deep the
+  model, each sampled down to a fixed size.
+
 ## 0.13.1 — 2026-11-16
 
 ### Changed
