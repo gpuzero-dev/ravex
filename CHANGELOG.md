@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.14.8 — 2026-11-21
+
+### Fixed
+
+- **No more alarming warnings on a healthy run whose bucket is far away
+  (GPU-498).** With a delta at every step, the time the writer waits on the
+  link to the bucket no longer counts as what a save costs the loop: the
+  backend already answers a slow link by going on with fulls. A quickstart on
+  Scaleway writing to Cloudflare R2 warned of "77% of wall time", 46 ms of
+  its 53 ms being that wait, and then stepped in 9 ms. With fulls every
+  `checkpoint_every` the wait counts again.
+- **Going on with fulls is an INFO that says nothing is wrong.** It is the
+  run adjusting itself to the link, or to a delta as heavy as a full; as a
+  WARNING it read as a fault.
+
 ## 0.14.7 — 2026-11-21
 
 ### Fixed
