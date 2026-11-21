@@ -66,6 +66,36 @@ class TestKeepHyperparameters:
         ravex.train_loop(backend="torch_save", checkpoint_every=2)(lambda: script(0.5, 10, 6, seen))()
         assert seen["lr"] == pytest.approx(cosine(0.5, 4, 10))
 
+    def test_a_lambda_schedule_keeps_the_scripts_function(self, storage):
+        # GPU-487: LambdaLR's state_dict holds None for a plain function, and
+        # putting the schedule back used to write that None over the script's
+        # own, so the first schedule.step() after a fork raised TypeError.
+        def warmup(step):
+            return min(1.0, (step + 1) / 3)
+
+        def lambda_script(lr, total, seen):
+            torch.manual_seed(0)
+            model = torch.nn.Linear(4, 2)
+            optimizer = torch.optim.SGD(model.parameters(), lr=lr)
+            schedule = torch.optim.lr_scheduler.LambdaLR(optimizer, warmup)
+            ravex.track(model=model, optimizer=optimizer, scheduler=schedule)
+            while ravex.step() < total:
+                ravex.batch_boundary()
+                model(torch.randn(2, 4)).sum().backward()
+                optimizer.step()
+                schedule.step()
+                optimizer.zero_grad()
+            seen["lr"] = optimizer.param_groups[0]["lr"]
+            seen["epoch"] = schedule.last_epoch
+
+        ravex.train_loop(backend="torch_save", checkpoint_every=2)(lambda: lambda_script(0.1, 4, {}))()
+        seen = {}
+        ravex.train_loop(backend="torch_save", checkpoint_every=2, keep_hyperparameters=True)(
+            lambda: lambda_script(0.5, 6, seen)
+        )()
+        # The script's rate on the script's function, where the run got to.
+        assert seen["lr"] == pytest.approx(0.5 * warmup(seen["epoch"]))
+
     def test_a_restart_into_another_model_stops(self, storage):
         # "save" with a parameter that changes the model: the checkpoint does
         # not fit, and carrying on would corrupt the run.

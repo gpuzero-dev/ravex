@@ -3128,7 +3128,10 @@ class RavexRuntime:
         for scheduler, schedule in zip(self.registry.schedulers, chosen["schedules"]):
             if not schedule:
                 continue
-            scheduler.__dict__.update(schedule)
+            # load_state_dict, not __dict__.update: LambdaLR and MultiplicativeLR
+            # keep None for a plain function in their state, and only their own
+            # load knows to leave the script's function in place (GPU-487).
+            scheduler.load_state_dict(dict(schedule))
             closed = getattr(scheduler, "_get_closed_form_lr", None)
             if closed is None:
                 logger.info(
