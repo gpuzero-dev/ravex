@@ -4074,6 +4074,15 @@ class RavexRuntime:
         because a copy is being pushed to another machine, and the loop is
         stopped for the whole of it. Over loopback it is milliseconds and says
         nothing; over a 100 Mbps link it was 81% of the handoff.
+
+        ``backpressure`` does not count while a delta is saved at every step:
+        it is the writer waiting on the link to the bucket, which the backend
+        watches itself and answers by going on with fulls (GPU-418). Counted,
+        a quickstart on Scaleway writing to R2 warned of "77% of wall time",
+        46 ms of its 53 ms being that wait, just before the backend fixed it,
+        and the run then stepped in 9 ms (GPU-498). With fulls every
+        ``checkpoint_every`` it counts again: a writer slower than the cadence
+        is then the cadence's cost.
         """
         previous = self._last_checkpoint_end
         self._last_checkpoint_end = finished
@@ -4084,8 +4093,9 @@ class RavexRuntime:
         if step - self._cadence_first_step < self._CADENCE_WARN_AFTER_STEP:
             return
 
+        excluded = {"drain", "backpressure"} if self._saves_every_step() else {"drain"}
         self._cadence_samples.append(
-            (sum(v for k, v in phases.items() if k != "drain"), finished - previous)
+            (sum(v for k, v in phases.items() if k not in excluded), finished - previous)
         )
         count = len(self._cadence_samples)
         cost = sum(sample[0] for sample in self._cadence_samples) / count

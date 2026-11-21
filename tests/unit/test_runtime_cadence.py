@@ -107,6 +107,31 @@ def test_the_quickstart_on_windows_says_nothing():
     assert warnings == []
 
 
+def test_waiting_on_the_bucket_is_not_the_cost_of_a_delta():
+    """The quickstart on Scaleway, writing to R2, on 2026-11-21: 53 ms of
+    handoff per 69 ms step, 46 ms of it the writer waiting on the link. The
+    backend answers that by going on with fulls; it is not what a delta costs
+    the loop, and it warned "77% of wall time" (GPU-498)."""
+    runtime, warnings = _runtime(every=100, delta=True)
+    phases = {"collect": 0.001, "flatten": 0.005, "store": 0.002, "backpressure": 0.046}
+    _handoff(runtime, 0, 0.0, 0.069, phases)
+    now = 0.069
+    for step in range(51, 80):
+        _handoff(runtime, step, now, now + 0.069, phases)
+        now += 0.069
+    assert warnings == []
+
+
+def test_a_writer_slower_than_full_saves_still_counts():
+    """With fulls every checkpoint_every, the wait for the writer is the
+    cadence's own cost and is said."""
+    runtime, warnings = _runtime(every=2)
+    phases = {"collect": 0.1, "store": 0.1, "backpressure": 2.4}
+    _handoff(runtime, 0, 0.0, 10.0, phases)
+    _handoff(runtime, 54, 10.0, 16.0, phases)
+    assert len(warnings) == 1
+
+
 def test_replication_counts_against_the_cadence():
     """The mirror of the rule below, in the units it was measured in.
 

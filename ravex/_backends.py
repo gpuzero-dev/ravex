@@ -654,10 +654,16 @@ class MoonclipBackend(CheckpointBackend):
 
     def _go_full(self, step: int, why: str) -> None:
         """Go on with a full every `checkpoint_every` steps, `keep_last` of
-        them, as with `delta: false`, saying `why` once (GPU-418)."""
-        logger.warning(
-            "%s From step %d this run saves a full every %d steps and keeps %d, "
-            "and a resume starts from the last of them rather than from any step.",
+        them, as with `delta: false`, saying `why` once (GPU-418).
+
+        An INFO, not a WARNING: it is the run adjusting itself the way it
+        should, and nothing is wrong. Said as a warning, on a quickstart on
+        Scaleway writing to R2, it read as a fault to someone trying GPU Zero
+        for the first time (GPU-498)."""
+        logger.info(
+            "%s Nothing is wrong: from step %d this run saves a full every %d "
+            "steps and keeps %d, which the link keeps up with, and a resume "
+            "starts from the last of them rather than from any step.",
             why, step, self._config.checkpoint_every, self._config.keep_last,
         )
         self._weighed = True

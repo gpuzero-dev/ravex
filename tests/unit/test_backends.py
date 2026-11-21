@@ -705,7 +705,7 @@ def test_a_bucket_that_keeps_up_keeps_the_deltas(tmp_path):
 
 def test_a_bucket_falling_behind_moves_the_run_to_fulls(tmp_path, caplog):
     backend, opened = _linked_backend(tmp_path, [None, 100, 100, 100, 100])
-    with caplog.at_level("WARNING", logger="ravex"):
+    with caplog.at_level("INFO", logger="ravex"):
         for step in (100, 200, 300, 400, 500):
             backend._check_the_link(step)
             if opened:
@@ -713,7 +713,10 @@ def test_a_bucket_falling_behind_moves_the_run_to_fulls(tmp_path, caplog):
     assert opened and opened[0]["full_every_steps"] == 1
     assert not backend.saves_every_step
     assert step == 500, "it gave up on the link before two checkpoints in a row said so"
-    assert "behind the saves" in caplog.text
+    said = [r for r in caplog.records if "behind the saves" in r.getMessage()]
+    # The run adjusting itself, not a fault: no WARNING for it (GPU-498).
+    assert said and all(r.levelname == "INFO" for r in said)
+    assert "Nothing is wrong" in said[0].getMessage()
 
 
 def test_one_slow_sync_is_not_the_link(tmp_path):
