@@ -1764,11 +1764,22 @@ class DeltaExchange:
                 )
                 return None
             if status != OK:
-                logger.info(
-                    "Rank %s no longer holds round %d and cannot serve it.",
-                    peer,
-                    round_number,
-                )
+                # For a state, GONE means "not written yet": it is answered
+                # without waiting, and the asker comes back (`_serve_state`).
+                # Read as "no longer holds", it sent GPU-501 looking for a
+                # lost round while the source was still writing the state.
+                if kind == KIND_STATE:
+                    logger.info(
+                        "Rank %s has not written the run's state for round %d yet; asking again.",
+                        peer,
+                        round_number,
+                    )
+                else:
+                    logger.info(
+                        "Rank %s no longer holds round %d and cannot serve it.",
+                        peer,
+                        round_number,
+                    )
                 return None
 
             # From here the transport has the socket, and the bound is one the

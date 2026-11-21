@@ -46,11 +46,20 @@ the format, which is a bug in whoever wrote it.
 
 from __future__ import annotations
 
+import logging
 import os
 import queue
 import struct
 import threading
+import time
 from typing import Iterator, List, Optional, Set, Tuple
+
+logger = logging.getLogger("ravex")
+
+#: How often a long receive says how far it has got (GPU-501). A node taking
+#: a run's starting state - gigabytes over a link of a few MB/s - was silent
+#: for six minutes with its GPU idle, and read exactly like one that hung.
+PROGRESS_EVERY = 30.0
 
 #: Bytes per chunk on the wire. Bounded on purpose: a real shard is over a
 #: gigabyte, and a whole-store buffer would be that allocation on the training
@@ -447,6 +456,14 @@ class StoreWriter:
         self._index += 1
 
     @property
+    def expected(self) -> Optional[int]:
+        """The bytes the sender will put on the wire, once the header is in:
+        the files it said it would send, not the ones already here."""
+        if self._entries is None:
+            return None
+        return sum(size for _, size, already_there in self._entries if not already_there)
+
+    @property
     def complete(self) -> bool:
         """Whether every file the header promised is present here, whole."""
         return (
@@ -506,16 +523,44 @@ def receive_store(sock, destination: str) -> bool:
     writer = StoreWriter(destination)
     buffer = bytearray(RECEIVE)
     view = memoryview(buffer)
+    started = time.monotonic()
+    said = started
+    received = 0
     try:
         while not writer.complete:
             count = sock.recv_into(buffer)
             if count == 0:
                 break
             writer.feed(view[:count])
+            received += count
+            now = time.monotonic()
+            if now - said >= PROGRESS_EVERY:
+                said = now
+                _say_progress(destination, received, writer.expected, now - started)
         writer.close()
         return writer.commit()
     finally:
         writer.close()
+
+
+def _say_progress(destination: str, received: int, expected: Optional[int], elapsed: float) -> None:
+    """One line on a receive that is taking long: how much, how fast, how much
+    longer. ``received`` counts the header too, which is noise next to a store
+    worth reporting on."""
+    mib = 1024.0 * 1024.0
+    rate = received / elapsed if elapsed > 0 else 0.0
+    if expected:
+        left = max(expected - received, 0)
+        logger.info(
+            "Receiving %s: %.0f of %.0f MiB in %.0fs, %.1f MiB/s, about %.0fs left.",
+            destination, received / mib, expected / mib, elapsed, rate / mib,
+            left / rate if rate > 0 else float("inf"),
+        )
+    else:
+        logger.info(
+            "Receiving %s: %.0f MiB in %.0fs, %.1f MiB/s.",
+            destination, received / mib, elapsed, rate / mib,
+        )
 
 
 # ─── the pre-staging pair, over a connection someone else owns ──────────────

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A long transfer between nodes says how far it has got (GPU-501).** Every
+  30 s a receive that is still going logs the MiB arrived out of those
+  expected, the rate and about how long is left. A node taking deepseek-1b's
+  starting state (about 9 GB) over RunPod's network was silent for minutes
+  with its GPU idle, and read exactly like one that had hung.
+- **A starting state that is not written yet is no longer reported as lost.**
+  The node asking for it logged "no longer holds round 0" while the source
+  was still writing it; it now says the state is not written yet and that it
+  is asking again.
+
 ## 0.14.8 — 2026-11-21
 
 ### Fixed

@@ -62,6 +62,32 @@ def test_a_store_arrives_whole(tmp_path):
     assert (tmp_path / "d" / COMPLETE_MARKER).exists()
 
 
+def test_a_long_receive_says_how_far_it_has_got(tmp_path, monkeypatch, caplog):
+    # GPU-501: a node taking gigabytes of starting state at a few MB/s was
+    # silent for minutes and read like one that hung.
+    write(tmp_path / "s", "a.bin", b"\x07" * 3 * 1024 * 1024)
+    out = Wire()
+    transport.send_store(out, str(tmp_path / "s"), 1 << 20, None)
+    monkeypatch.setattr(transport, "PROGRESS_EVERY", 0.0)
+
+    with caplog.at_level("INFO", logger="ravex"):
+        assert transport.receive_store(Wire(out.sent), str(tmp_path / "d"))
+
+    said = [record.getMessage() for record in caplog.records if "Receiving" in record.getMessage()]
+    assert said and all(" of 3 MiB" in line for line in said)
+
+
+def test_what_is_expected_leaves_out_the_files_already_here(tmp_path):
+    write(tmp_path / "s", "a.bin", b"\x07" * 300)
+    write(tmp_path / "s", "b.bin", b"\x09" * 5)
+    out = Wire()
+    transport.send_store(out, str(tmp_path / "s"), 64, {"b.bin"})
+    writer = transport.StoreWriter(str(tmp_path / "d"))
+    assert writer.expected is None
+    writer.feed(bytes(out.sent))
+    assert writer.expected == 300
+
+
 def test_an_empty_file_still_arrives(tmp_path):
     """The case the buffered path exists for: a zero-length file is created by
     being reached, not by being written to."""
