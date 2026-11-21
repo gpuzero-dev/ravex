@@ -31,6 +31,10 @@ on:
 # go out with tokens of their own, minted by CD.yml.
 permissions:
   contents: read
+  # actions: write is for the last step of every job (fail fast): a job that
+  # fails cancels the whole run, and with it the CD that called it, so no
+  # other job keeps spending minutes on a commit already known to be bad.
+  actions: write
 
 # Pinned, all of it (GPU-493). Each action by its commit, with the tag beside
 # it: a tag can be moved by whoever controls the action, and CD.yml runs this
@@ -63,7 +67,6 @@ jobs:
   unit:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         # Keep in step with the classifiers in pyproject.toml and with
         # https://devguide.python.org/versions/ — this list is that list,
@@ -137,6 +140,12 @@ jobs:
           # depend on it.
           pip install --quiet -e . pytest pyarrow
           pytest tests/unit -v
+      - name: Stop the whole run
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
 
   # The free-threaded build of 3.14, which releases shipped a cp314t wheel for
   # until GPU-267 (GPU-189); the one pure wheel has to work on it now. Its
@@ -180,6 +189,12 @@ jobs:
           # has no extension since GPU-267, but whatever it imports could.
           python -c "import sys, ravex; assert not sys._is_gil_enabled(), 'importing ravex re-enabled the GIL'"
           pytest tests/unit -v
+      - name: Stop the whole run
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
 
   # Moonclip is Ravex's *default* backend, so leaving it to the skip-if-absent
   # path would mean the shipped configuration is the one nothing runs.
@@ -197,7 +212,6 @@ jobs:
     name: moonclip-backend (${{ matrix.suite }})
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         suite: [unit, distributed]
     # The slowest job in the file: `distributed` took 12 minutes on most runs
@@ -311,6 +325,12 @@ jobs:
           # four threads is how a parallel suite ends up slower than a serial
           # one.
           OMP_NUM_THREADS=1 pytest tests/${{ matrix.suite }} -v -n 4 --dist loadfile
+      - name: Stop the whole run
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
 
   # What the unit suite structurally cannot reach: config discovery from the
   # working directory, a resume that starts from a genuinely empty interpreter,
@@ -359,6 +379,12 @@ jobs:
         # test_frameworks.py is excluded because it is the only file that needs
         # transformers, accelerate and lightning — it has its own job below.
         run: pytest integration -v --tb=short --ignore=integration/test_frameworks.py
+      - name: Stop the whole run
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
 
   # Split out of `integration` because that job hit the ten-minute wall on
   # `codeberg-medium` — 602 seconds, the limit to the second — and was cancelled
@@ -400,6 +426,12 @@ jobs:
 
       - name: Framework integration suite
         run: pytest integration/test_frameworks.py -v --tb=short
+      - name: Stop the whole run
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
 
   # A new user's first minutes, on each interpreter they may have (GPU-367):
   # an empty slim image, Ravex installed as the wheel this commit would
@@ -412,7 +444,6 @@ jobs:
   first-run:
     runs-on: ubuntu-latest
     strategy:
-      fail-fast: false
       matrix:
         python: ["3.11", "3.12", "3.13"]
         include:
@@ -445,6 +476,12 @@ jobs:
         # The `pytest` script and not `python -m pytest`, which would put the
         # checkout's `ravex/` ahead of the installed wheel.
         run: OMP_NUM_THREADS=1 pytest tests/distributed/test_examples.py -v
+      - name: Stop the whole run
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
 
   # Python 3.10 cannot run Ravex, and pip has to say so rather than install an
   # old release that has none of the README: every release that claimed 3.9 is
@@ -464,3 +501,9 @@ jobs:
           fi
           cat err.txt
           grep -q "No matching distribution found for ravex" err.txt
+      - name: Stop the whole run
+        if: failure()
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
