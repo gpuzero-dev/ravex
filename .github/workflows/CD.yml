@@ -1,0 +1,212 @@
+name: CD
+
+# A push to the deploy branch is a release: `git push origin main:deploy`
+# runs the whole CI on the commit, tags the version ravex/__init__.py carries,
+# and publishes it - the sdist and the wheel to PyPI. The same branch, and the
+# same shape of workflow, Moonclip deploys from, so no tag is ever typed by
+# hand.
+#
+# The version is chosen by the commit (a `release: ravex x.y.z` commit on
+# main bumps it and the CHANGELOG), never here. A push whose version is
+# already tagged fails rather than doing nothing: the only reason to push here
+# is to publish, and a version that already went out is a bump that was
+# forgotten.
+#
+# PyPI's trusted publisher for ravex must name `CD.yml` as the workflow and
+# `production` as the environment (GPU-489): the OIDC token PyPI checks names
+# the workflow the run started from, and until GPU-489 that was deploy.yml.
+on:
+  push:
+    branches: [deploy]
+
+# Two pushes in a row each get their run, the second after the first: neither
+# may stop the other halfway through an upload.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+# The job token only reads: nothing pushes, tags or comments except the `tag`
+# job, which asks for write itself. The publish job also asks for an OIDC
+# token, which PyPI trades for a publish token that expires on its own
+# (trusted publishing, GPU-412): no PyPI token is stored anywhere.
+permissions:
+  contents: read
+
+jobs:
+  # The whole CI of this commit first, and nothing is tagged unless it
+  # passes (GPU-443, GPU-487): CI before CD. A release goes out only when
+  # every check the repository has is green on the very commit that is
+  # published.
+  ci:
+    uses: ./.github/workflows/CI.yml
+
+  tag:
+    needs: ci
+    runs-on: ubuntu-latest
+    # The one job that writes: it pushes the tag. The job that publishes
+    # runs with a read-only job token and its own short-lived PyPI token.
+    permissions:
+      contents: write
+    outputs:
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      # Not shallow: the check below has to prove the commit is on main.
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      # The same provenance check `publish` makes of the tag: deploy publishes
+      # what main has, not a commit pushed there from a branch nobody merged.
+      - name: The commit must be on main
+        run: |
+          set -eu
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "deploy is at $(git rev-parse --short HEAD), which is not on main." >&2
+            echo "Push main to it: git push origin main:deploy. Nothing was tagged." >&2
+            exit 1
+          fi
+
+      - name: Tag the version
+        id: tag
+        run: |
+          set -eu
+          VERSION=$(grep -m1 '^__version__ = ' ravex/__init__.py | cut -d'"' -f2)
+          if [ -z "$VERSION" ]; then
+            echo "no __version__ in ravex/__init__.py" >&2
+            exit 1
+          fi
+          TAG="v$VERSION"
+          if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
+            echo "$TAG is already released, at $(git rev-list -n1 "$TAG" | cut -c1-7)." >&2
+            echo "Bump the version in a release commit on main, then push main:deploy again." >&2
+            exit 1
+          fi
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$TAG" -m "ravex $VERSION"
+          git push origin "refs/tags/$TAG"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "tagged $TAG at $(git rev-parse --short HEAD)"
+
+  # A job of this workflow rather than a workflow triggered by the tag: a tag
+  # pushed with the job token starts no other workflow, so the tag above would
+  # otherwise publish nothing. Until GPU-489 this was release.yml, called from
+  # here; a tag pushed by hand no longer publishes anything, so every release
+  # goes through CI and the provenance check above.
+  #
+  # One job and one wheel again, since GPU-267. From GPU-105 to 0.7.8 the
+  # reshard planner and the store transport were a compiled extension, so a
+  # wheel was specific to an interpreter and a platform and a release was an
+  # sdist plus a wheel per CPython, built in the manylinux image with a Rust
+  # toolchain. Ravex is Python only now: one `py3-none-any` wheel serves every
+  # interpreter and platform, free-threaded 3.14 included, and the sdist builds
+  # anywhere. Building and uploading stay in one job, as they were, so the
+  # files PyPI receives are the ones checked a moment before on the same
+  # machine.
+  publish:
+    needs: [ci, tag]
+    # Publishes, so it runs in `production` (open to main, deploy and v* tags
+    # only) and may ask GitHub for an OIDC token, which the index trades for
+    # a short-lived publish token (GPU-412).
+    environment: production
+    permissions:
+      contents: read
+      id-token: write
+    runs-on: ubuntu-latest
+    container:
+      image: python:3.12-bookworm
+    env:
+      TAG: ${{ needs.tag.outputs.tag }}
+    steps:
+      # Full history on purpose: the check below has to prove the tagged commit
+      # is on main, and a shallow clone cannot answer that question.
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          ref: ${{ needs.tag.outputs.tag }}
+
+      # A tag can be pushed from any commit in the repository, including one on
+      # a branch that was never reviewed or merged. Publishing is the one action
+      # here that cannot be undone - PyPI refuses to reuse a version number - so
+      # the tag has to name a commit that reached main. The `tag` job checked
+      # the commit it tagged; this checks the tag that was actually checked out.
+      - name: Tag must be on main
+        run: |
+          set -eu
+          # actions/checkout trusts the workspace only for its own git calls.
+          # This container runs as root over a tree the runner user owns, so
+          # every git command here stops at "dubious ownership" - and with
+          # `git rev-parse` empty, the message below blamed the tag instead.
+          git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "Tag $TAG points at $(git rev-parse --short HEAD)," >&2
+            echo "which is not reachable from main. Merge the branch first, then" >&2
+            echo "tag the merge commit. Nothing has been published." >&2
+            exit 1
+          fi
+          echo "$(git rev-parse --short HEAD) is on main"
+
+      # One number: the wheel's metadata reads it from `ravex/__init__.py`
+      # (hatchling's `[tool.hatch.version]`), which is also what `ravex
+      # --version` prints. Ahead of the build and of the token check, because
+      # both cost nothing and the mistake this catches is permanent.
+      - name: Tag must match the package version
+        run: |
+          set -eu
+          VERSION=$(grep -m1 '^__version__ = ' ravex/__init__.py | cut -d'"' -f2)
+          echo "ravex/__init__.py $VERSION, tag $TAG"
+          if [ "v$VERSION" != "$TAG" ]; then
+            echo "Tag $TAG does not match version $VERSION" >&2
+            exit 1
+          fi
+
+      # Before the build, so a publisher PyPI does not trust - one that still
+      # names an old workflow file, say - fails in seconds rather than after it.
+      - name: PyPI must trust this workflow
+        run: |
+          set -eu
+          TOKEN=$(sh .github/scripts/trusted-token.sh pypi)
+          echo "::add-mask::$TOKEN"
+          echo "PyPI issues a token to this workflow"
+
+      - name: Build the sdist and the wheel
+        run: |
+          set -eu
+          pip install --quiet build twine
+          python -m build --outdir dist
+          ls -la dist/
+          twine check dist/*
+          # One pure wheel, and the version in its name is the package's.
+          VERSION=$(grep -m1 '^__version__ = ' ravex/__init__.py | cut -d'"' -f2)
+          ls dist/ravex-"$VERSION"-py3-none-any.whl
+          # No compiled file may ride along: a leftover `_core` from an old
+          # editable build would install and then shadow nothing, or worse.
+          python -c 'import sys, zipfile; names = zipfile.ZipFile(sys.argv[1]).namelist(); bad = [n for n in names if n.endswith((".so", ".pyd", ".pyc"))]; assert not bad, bad; assert "ravex/__init__.py" in names; print("wheel layout ok")' dist/*.whl
+          # The sdist has to build without the working tree around it, which
+          # is the whole point of shipping one.
+          tmp=$(mktemp -d)
+          tar xzf dist/*.tar.gz -C "$tmp"
+          ls "$tmp"/*/pyproject.toml "$tmp"/*/CHANGELOG.md
+          pip wheel --quiet --no-deps --wheel-dir "$tmp/out" "$tmp"/*/
+          ls "$tmp"/out/*.whl
+
+      - name: Upload to PyPI
+        env:
+          TWINE_USERNAME: __token__
+        run: |
+          set -eu
+          # Trusted publishing (GPU-412): a token minted for this job, not a
+          # stored secret. Masked before anything could print it.
+          TWINE_PASSWORD=$(sh .github/scripts/trusted-token.sh pypi)
+          echo "::add-mask::$TWINE_PASSWORD"
+          export TWINE_PASSWORD
+          # `--skip-existing` so a re-run is harmless. Without it, uploading a
+          # file PyPI already holds is a 400 whose body twine reports as just
+          # "Bad Request" - which is how this pipeline's first run ever ended,
+          # having raced a manual upload of the same 0.0.2 by forty seconds.
+          #
+          # `ravex[moonclip]` resolves its extra from PyPI, so Moonclip has to
+          # be published there before this repository is tagged.
+          twine upload --skip-existing dist/*

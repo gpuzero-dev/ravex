@@ -1,25 +1,34 @@
 name: CI
 
-# Only `main`. Between the six-interpreter matrix, the job that builds Moonclip
-# from source and the integration suite, a pull request and its merge ran the
-# whole thing twice for one change. `checks.yml` covers the branch cheaply
-# instead.
+# Every check this repository has, on every push to a branch (GPU-489). It
+# used to be two workflows: `checks.yml`, one interpreter of the unit suite on
+# branches, and the full thing on main only, because a pull request and its
+# merge ran the six-interpreter matrix, the job that builds Moonclip from
+# source and the integration suite twice for one change. The pipeline no
+# longer runs on pull requests, and the repository is public, so the runners
+# cost nothing: a branch is now proven against every interpreter and the
+# integration suite before it reaches main, instead of a single-interpreter
+# or integration-only failure landing there first.
 #
-# The cost, stated plainly: a branch is not proven against every interpreter
-# before merging, so a single-interpreter or integration-only failure lands
-# on main.
+# The old branch job ran `tests/unit` on 3.12 and nothing else; `unit` below
+# runs the same suite on the same interpreter (with pyarrow, so the Neptune
+# import's test runs instead of skipping), so it was dropped rather than kept
+# as a duplicate.
 on:
   push:
-    branches: [main]
+    # Not `deploy`: CD.yml calls this workflow on the commit it publishes,
+    # before the tag (GPU-443), and a second run of the same commit beside it
+    # would gate nothing.
+    branches-ignore: [deploy]
   # Run it by hand, without inventing a commit to trigger it. The need showed up
   # the first time this repository had Actions switched on after the pushes had
   # already happened: main was untested and there was no event left to replay.
   workflow_dispatch:
-  # deploy.yml runs it on the commit it publishes, before the tag.
+  # CD.yml runs it on the commit it publishes, before the tag.
   workflow_call:
 
 # The job token only reads: nothing here pushes, tags or comments, and releases
-# go out with their own PyPI token.
+# go out with tokens of their own, minted by CD.yml.
 permissions:
   contents: read
 
@@ -85,6 +94,11 @@ jobs:
         run: |
           set -eu
           python --version
+          # torch is not a dependency of Ravex - it is the thing Ravex hooks,
+          # and declaring it would decide the build (CPU or CUDA) for everyone
+          # who installs - but the test modules import it at module scope, so
+          # every job here installs it itself.
+          #
           # CPU wheels: these tests are about correctness, not throughput, and
           # the CUDA build is gigabytes of download for nothing.
           # `--index-url` *replaces* PyPI rather than adding to it, so pip could
@@ -99,10 +113,11 @@ jobs:
           pip install --quiet -e . pytest pyarrow
           pytest tests/unit -v
 
-  # The free-threaded build of 3.14, which release.yml ships a cp314t wheel for
-  # (GPU-189). Its own job rather than a fifth matrix entry: the official
-  # `python:3.14` image has the GIL, and no official image has 3.14t, so uv
-  # fetches the interpreter instead of the image providing it.
+  # The free-threaded build of 3.14, which releases shipped a cp314t wheel for
+  # until GPU-267 (GPU-189); the one pure wheel has to work on it now. Its
+  # own job rather than a fifth matrix entry: the official `python:3.14` image
+  # has the GIL, and no official image has 3.14t, so uv fetches the
+  # interpreter instead of the image providing it.
   unit-free-threaded:
     runs-on: ubuntu-latest
     container:
