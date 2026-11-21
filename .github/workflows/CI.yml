@@ -142,10 +142,14 @@ jobs:
           pytest tests/unit -v
       - name: Stop the whole run
         if: failure()
+        env:
+          MATRIX: ${{ matrix && toJSON(matrix) || '' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
+            // The cancel marks this job cancelled too: the error says which one failed.
+            core.error(`${context.job} ${process.env.MATRIX} failed: the rest of the run is cancelled`);
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId });
 
   # The free-threaded build of 3.14, which releases shipped a cp314t wheel for
   # until GPU-267 (GPU-189); the one pure wheel has to work on it now. Its
@@ -191,10 +195,14 @@ jobs:
           pytest tests/unit -v
       - name: Stop the whole run
         if: failure()
+        env:
+          MATRIX: ${{ matrix && toJSON(matrix) || '' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
+            // The cancel marks this job cancelled too: the error says which one failed.
+            core.error(`${context.job} ${process.env.MATRIX} failed: the rest of the run is cancelled`);
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId });
 
   # Moonclip is Ravex's *default* backend, so leaving it to the skip-if-absent
   # path would mean the shipped configuration is the one nothing runs.
@@ -327,10 +335,14 @@ jobs:
           OMP_NUM_THREADS=1 pytest tests/${{ matrix.suite }} -v -n 4 --dist loadfile
       - name: Stop the whole run
         if: failure()
+        env:
+          MATRIX: ${{ matrix && toJSON(matrix) || '' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
+            // The cancel marks this job cancelled too: the error says which one failed.
+            core.error(`${context.job} ${process.env.MATRIX} failed: the rest of the run is cancelled`);
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId });
 
   # What the unit suite structurally cannot reach: config discovery from the
   # working directory, a resume that starts from a genuinely empty interpreter,
@@ -381,10 +393,14 @@ jobs:
         run: pytest integration -v --tb=short --ignore=integration/test_frameworks.py
       - name: Stop the whole run
         if: failure()
+        env:
+          MATRIX: ${{ matrix && toJSON(matrix) || '' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
+            // The cancel marks this job cancelled too: the error says which one failed.
+            core.error(`${context.job} ${process.env.MATRIX} failed: the rest of the run is cancelled`);
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId });
 
   # Split out of `integration` because that job hit the ten-minute wall on
   # `codeberg-medium` — 602 seconds, the limit to the second — and was cancelled
@@ -428,10 +444,14 @@ jobs:
         run: pytest integration/test_frameworks.py -v --tb=short
       - name: Stop the whole run
         if: failure()
+        env:
+          MATRIX: ${{ matrix && toJSON(matrix) || '' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
+            // The cancel marks this job cancelled too: the error says which one failed.
+            core.error(`${context.job} ${process.env.MATRIX} failed: the rest of the run is cancelled`);
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId });
 
   # A new user's first minutes, on each interpreter they may have (GPU-367):
   # an empty slim image, Ravex installed as the wheel this commit would
@@ -478,10 +498,14 @@ jobs:
         run: OMP_NUM_THREADS=1 pytest tests/distributed/test_examples.py -v
       - name: Stop the whole run
         if: failure()
+        env:
+          MATRIX: ${{ matrix && toJSON(matrix) || '' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
+            // The cancel marks this job cancelled too: the error says which one failed.
+            core.error(`${context.job} ${process.env.MATRIX} failed: the rest of the run is cancelled`);
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId });
 
   # Python 3.10 cannot run Ravex, and pip has to say so rather than install an
   # old release that has none of the README: every release that claimed 3.9 is
@@ -503,7 +527,11 @@ jobs:
           grep -q "No matching distribution found for ravex" err.txt
       - name: Stop the whole run
         if: failure()
+        env:
+          MATRIX: ${{ matrix && toJSON(matrix) || '' }}
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
           script: |
-            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId })
+            // The cancel marks this job cancelled too: the error says which one failed.
+            core.error(`${context.job} ${process.env.MATRIX} failed: the rest of the run is cancelled`);
+            await github.rest.actions.cancelWorkflowRun({ ...context.repo, run_id: context.runId });
