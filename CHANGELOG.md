@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.14.5 — 2026-11-21
+
+### Fixed
+
+- **Ravex refuses a Moonclip older than 0.3.8 at start (GPU-443).** 0.14.4
+  asked for `moonclip>=0.3.8` in its extra but still accepted 0.3.6 and 0.3.7
+  when they were already installed, and with them rank 0 of an outer loop
+  still held several copies of the state while saving.
+
 ## 0.14.4 — 2026-11-21
 
 ### Fixed
