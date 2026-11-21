@@ -240,8 +240,10 @@ _PREFIX = "ravex"
 #: the first whose periodic sync sends each snapshot's ranks file with its
 #: packs: an older one wrote them one at a time afterwards, ~45 s of a ~70 s
 #: sync from a rented node to R2, while the metrics and the next sync waited
-#: (GPU-422).
-MOONCLIP_FLOOR = (0, 3, 6)
+#: (GPU-422). 0.3.8 is the first whose save and load hold one copy of the
+#: state: with an older one rank 0 of an outer loop ran out of memory at
+#: the start (GPU-443).
+MOONCLIP_FLOOR = (0, 3, 8)
 
 
 class RemoteNeedsMoonclip(RuntimeError):

@@ -460,7 +460,7 @@ class TestMoonclipFloor:
         assert tuple(int(part) for part in declared.groups()) == MOONCLIP_FLOOR
 
     @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-    @pytest.mark.parametrize("version", ["0.1.2", "0.3.5", "garbage", None])
+    @pytest.mark.parametrize("version", ["0.1.2", "0.3.7", "garbage", None])
     def test_an_old_or_unreadable_moonclip_is_refused_not_replaced(self, tmp_path, monkeypatch, version):
         from ravex._backends import MoonclipTooOld
 
@@ -469,7 +469,7 @@ class TestMoonclipFloor:
             get_backend(make_config(tmp_path, backend="moonclip"))
 
     @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-    @pytest.mark.parametrize("version", ["0.3.6", "0.3.7.dev0", "1.0.0"])
+    @pytest.mark.parametrize("version", ["0.3.8", "0.3.9.dev0", "1.0.0"])
     def test_the_floor_or_later_is_used(self, tmp_path, monkeypatch, version):
         self._claiming(monkeypatch, version)
         backend = get_backend(make_config(tmp_path, backend="moonclip"))
