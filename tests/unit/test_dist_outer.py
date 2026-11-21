@@ -702,3 +702,28 @@ def test_a_silent_peer_is_not_a_reason_to_train_alone(monkeypatch):
     monkeypatch.setattr(_runtime.RavexRuntime, "_build_outer_loop", nobody)
     runtime._outer = None
     assert runtime._outer_loop() is None and runtime._outer is False
+
+
+def test_a_start_that_ends_the_job_says_why_at_once_and_saves_nothing(monkeypatch, caplog):
+    """GPU-501: on gpu501-001 the reason only came out after the exit, and the
+    exit was a full checkpoint of a model that had trained one step alone,
+    minutes of upload to the bucket with nothing in the log."""
+    from ravex import _runtime
+
+    runtime = _runtime.RavexRuntime.__new__(_runtime.RavexRuntime)
+    runtime._outer = None
+    runtime._outer_refused = None
+    runtime.registry = type("Registry", (), {"models": [object()]})()
+
+    def too_few(self):
+        raise RuntimeError("only 1 of the 2 node(s) reached the rendezvous")
+
+    monkeypatch.setattr(_runtime.RavexRuntime, "_build_outer_loop", too_few)
+    with caplog.at_level("ERROR", logger="ravex"), pytest.raises(RuntimeError):
+        runtime._outer_loop()
+
+    assert runtime._outer_refused == "only 1 of the 2 node(s) reached the rendezvous"
+    assert any(
+        record.levelname == "ERROR" and "could not start" in record.getMessage()
+        for record in caplog.records
+    )

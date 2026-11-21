@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **An outer loop that cannot start says why at once, and the job ends without
+  a checkpoint (GPU-501).** The reason only came out in the traceback after
+  the exit, and the exit saved a full checkpoint of a model that had trained
+  one step alone: for deepseek-1b, minutes of upload to the bucket with the
+  log's last line a checkpoint at step 1, which read like a run training.
 - **A node still dialling the rendezvous says so (GPU-501).** A name that
   does not resolve yet, or a refused dial, is waited for up to
   `outer_deadline`, and none of that wait was in the log: every 30 s the node

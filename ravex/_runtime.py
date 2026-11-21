@@ -247,6 +247,9 @@ class RavexRuntime:
         #: not the same as "not tried yet", and not retried every step, the
         #: same distinction `_ring_link` makes.
         self._outer: Any = None
+        #: Why the outer loop could not start, when that ends the job
+        #: (GPU-501): the exit then saves no checkpoint of its own.
+        self._outer_refused: Optional[str] = None
         self._exchange: Any = None
         #: The three exchanges of a round over regions (GPU-143), by role:
         #: ``region``, ``delegates``, ``results``. None for a flat round, which
@@ -1522,6 +1525,18 @@ class RavexRuntime:
             )
             self._outer = False
             return None
+        except Exception as exc:
+            # Said here, as it happens (GPU-501). The traceback only comes out
+            # after the exit, and on gpu501-001 the exit was a full checkpoint
+            # of deepseek-1b going up to the bucket: minutes of a job saying
+            # nothing, with its last line a checkpoint at step 1.
+            self._outer_refused = str(exc)
+            logger.error(
+                "The outer loop could not start: %s. Ending the job, without a "
+                "checkpoint: this node's steps were never the run's.",
+                exc,
+            )
+            raise
         return self._outer or None
 
     def _knows_its_run(self) -> bool:
@@ -4672,6 +4687,7 @@ class RavexRuntime:
                 self._land_round(wait=True, leaving=True)
             if (
                 self.config.checkpoint_on_exit
+                and self._outer_refused is None
                 and self.registry.step_count > 0
                 and self.registry.step_count != self._last_saved_step
                 and self._final_checkpoint_is_safe()
