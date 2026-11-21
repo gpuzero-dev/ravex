@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.14.6 — 2026-11-21
+
+### Fixed
+
+- **A fork keeps a LambdaLR's function (GPU-487).** A fork, or a restart with
+  `keep_hyperparameters`, put the script's schedule back with the scheduler's
+  `state_dict()`, where `LambdaLR` and `MultiplicativeLR` hold `None` for a plain
+  function; the script's function was overwritten with it, and the first
+  `schedule.step()` raised `TypeError: 'NoneType' object is not callable`. The
+  schedule now goes back through the scheduler's own `load_state_dict`.
+
 ## 0.14.5 — 2026-11-21
 
 ### Fixed
