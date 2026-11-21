@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.14.7 — 2026-11-21
+
+### Fixed
+
+- **A restart within one clock tick still cuts the node's metrics line
+  (GPU-488).** On Windows `time.time()` moves in steps of about 15.6 ms, so a
+  segment started in the same tick as the previous one had the same start and
+  the two could be read in either order. Each segment of a process now starts
+  strictly after the one before it.
+- **The quickstart no longer warns about checkpoint cost (GPU-448).** The
+  observation now stays quiet while a handoff costs less than 50 ms per step
+  (it was 10 ms): on Windows the README's quickstart warned of 88% of wall
+  time to the first script a new user runs.
+
+### Documentation
+
+- The README says to install torch, with the CPU index for a first try
+  (GPU-448).
+
 ## 0.14.6 — 2026-11-21
 
 ### Fixed
