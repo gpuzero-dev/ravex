@@ -94,6 +94,19 @@ def test_a_handoff_of_a_few_milliseconds_says_nothing():
     assert warnings == []
 
 
+def test_the_quickstart_on_windows_says_nothing():
+    """The README's quickstart on Windows: 11 ms of handoff per 12 ms step,
+    every handoff, past the warm-up. It warned of 88% of wall time to the
+    first script a new user runs (GPU-448)."""
+    runtime, warnings = _runtime(every=100, delta=True)
+    _handoff(runtime, 0, 0.0, 0.012, {"collect": 0.011})
+    now = 0.012
+    for step in range(50, 80):
+        _handoff(runtime, step, now, now + 0.012, {"collect": 0.011})
+        now += 0.012
+    assert warnings == []
+
+
 def test_replication_counts_against_the_cadence():
     """The mirror of the rule below, in the units it was measured in.
 

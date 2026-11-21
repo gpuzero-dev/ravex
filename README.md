@@ -15,7 +15,13 @@ pip install ravex
 
 Ravex is pure Python and needs Python 3.11 or later. It does not depend on
 torch, so that it attaches to whatever build you already have (CUDA, ROCm, CPU)
-instead of pulling another one in.
+instead of pulling another one in. On a machine without torch, install it
+first, the build for your hardware from [pytorch.org](https://pytorch.org/get-started/locally/),
+or for a quick try on a CPU:
+
+```bash
+pip install torch --index-url https://download.pytorch.org/whl/cpu
+```
 
 On Python 3.10 or older `pip install ravex` stops with "No matching
 distribution found for ravex": every release that said it ran there is yanked.

@@ -4046,8 +4046,12 @@ class RavexRuntime:
 
     #: Nor for a handoff shorter than this, in seconds. A model small enough
     #: to step in a millisecond spends a large share of nothing on its
-    #: checkpoints, and a warning about it only frightens.
-    _CADENCE_WARN_MIN_COST = 0.01
+    #: checkpoints, and a warning about it only frightens. 10 ms was not
+    #: enough: the README's quickstart on Windows hands off in 11 ms per 12 ms
+    #: step and warned "88% of wall time" to the first thing a new user runs
+    #: (GPU-448). The runs this is for hand off in hundreds of milliseconds or
+    #: seconds (a third of wall time on a 1.5B model, above), far above 50 ms.
+    _CADENCE_WARN_MIN_COST = 0.05
 
     def _warn_if_cadence_is_expensive(
         self, step: int, started: float, finished: float, phases: dict
