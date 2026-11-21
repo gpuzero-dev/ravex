@@ -119,7 +119,7 @@ dependencies = ["PyYAML>=5.1"]
 #            0.3.6 since GPU-422: an older one wrote each snapshot's
 #            ranks.json one at a time after a sync's copies, ~45 s of a ~70 s
 #            sync to R2, which held up the metrics and every later sync.
-moonclip = ["moonclip>=0.3.6"]
+moonclip = ["moonclip>=0.3.8"]
 dev = ["pytest>=7", "numpy"]
 
 [project.urls]

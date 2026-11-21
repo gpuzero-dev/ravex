@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.14.4 — 2026-11-21
+
+### Fixed
+
+- **A node whose peer has gone silent ends the job in 120 s (GPU-443).** It
+  used to ask for the seed or the round every 0.2 s for the whole
+  `outer_deadline` (900 s), swallowing the broken pipe, and then train
+  alone; now it fails with `PeerSilent`, so the agent reports it and the
+  machine is given back.
+- **Less memory when the outer loop starts (GPU-443).** No second copy of the
+  saved state, no clone of the reports read, no momentum allocated only to
+  measure it, and glibc's mmap and trim thresholds held at their default for
+  the whole run so that freed memory goes back to the system. With
+  Moonclip 0.3.8 the peak of rank 0 went from 20.1x to 12.7x the parameters;
+  `ravex[moonclip]` now asks for `moonclip>=0.3.8`.
+- **With a DataLoader, the errors that stop a resume are no longer swallowed
+  (GPU-458)**, and the resume waits for the optimizer to exist.
+- **An outer loop that does not start ends the job (GPU-459)**; a node trains
+  alone only when there was nobody to train with.
+- **A store in a bucket does not fall back to `torch.save` (GPU-469)**, a
+  disabled runtime leaves SIGTERM to the process, and the resumed step is
+  not saved a second time.
+- **An optimizer's step hooks end with the run (GPU-476)**, and a resume that
+  fails halfway stops the run instead of going on from a state that is
+  neither the checkpoint nor a fresh start.
+
 ## 0.14.3 — 2026-11-18
 
 ### Added
