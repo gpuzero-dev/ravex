@@ -330,6 +330,27 @@ def segment_id(started: float, host: str, pid: int, rank: int) -> str:
     )
 
 
+_last_started = 0.0
+_started_lock = threading.Lock()
+
+
+def _segment_started() -> float:
+    """The wall-clock start of a new segment, later than any before it in this process.
+
+    The reader orders segments by this time and cuts each one at the next
+    one's resume step, so two segments of one process must never tie or run
+    backwards (GPU-488). They did: ``time.time()`` moves in 15.6 ms ticks on
+    Windows, a restart within one tick got the same time as the segment it
+    replaced, and the tie fell to the random tail of the segment's name - half
+    the time the old segment came out as the later one and kept the points the
+    restart should have dropped. A clock stepped back by NTP did the same.
+    """
+    global _last_started
+    with _started_lock:
+        _last_started = max(time.time(), _last_started + 1e-6)
+        return _last_started
+
+
 #: Name of a segment's first chunk, which holds only its header.
 HEADER_CHUNK = "000000.jsonl"
 
@@ -366,7 +387,7 @@ class MetricsWriter:
         uploader: Optional[Callable[[str], None]] = None,
         node: bool = False,
     ) -> None:
-        self.started = time.time()
+        self.started = _segment_started()
         self.host = socket.gethostname()
         self.rank = rank
         self.segment = segment_id(self.started, self.host, os.getpid(), rank)

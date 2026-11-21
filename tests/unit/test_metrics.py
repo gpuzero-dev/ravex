@@ -11,6 +11,7 @@ it shows a loss that jumps backwards for no reason anyone can find.
 import json
 import math
 import os
+import shutil
 
 import pytest
 import torch
@@ -551,6 +552,19 @@ def test_a_node_s_restart_cuts_its_own_line_only(tmp_path, monkeypatch):
     assert nodes["node-a"]["train/loss"]["step"] == [10, 20]
     assert nodes["node-a"]["train/loss"]["value"] == [1.0, 9.0]
     assert nodes["node-b"]["train/loss"]["step"] == [10, 20, 30]
+
+
+def test_a_restart_within_one_clock_tick_still_cuts(tmp_path, monkeypatch):
+    """GPU-488: on Windows ``time.time()`` moves in 15.6 ms ticks, and a
+    restart in the same tick as the segment it replaced tied with it, so the
+    random tail of the names decided which came later. The clock is frozen
+    here to make that tie certain instead of one run in ten."""
+    monkeypatch.setattr(_metrics.time, "time", lambda: 1_700_000_000.0)
+    for _ in range(20):
+        node_segment(tmp_path, "node-a", 0, [(10, 1.0), (30, 3.0)], monkeypatch)
+        node_segment(tmp_path, "node-a", 15, [(20, 9.0)], monkeypatch)
+        assert ravex.metrics.read(str(tmp_path))["nodes"]["node-a"]["train/loss"]["step"] == [10, 20]
+        shutil.rmtree(tmp_path / _metrics.METRICS_DIR)
 
 
 def test_node_segments_do_not_cut_the_model_series(tmp_path, monkeypatch):
