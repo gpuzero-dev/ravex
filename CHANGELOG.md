@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A node still dialling the rendezvous says so (GPU-501).** A name that
+  does not resolve yet, or a refused dial, is waited for up to
+  `outer_deadline`, and none of that wait was in the log: every 30 s the node
+  now says it is still dialling, why, and how long it will wait.
+
 ## 0.14.9 — 2026-11-21
 
 ### Fixed

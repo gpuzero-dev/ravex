@@ -121,6 +121,9 @@ DIAL_RETRY = 0.5
 #: on RunPod never met, twice, and the run paid two GPUs for 15 minutes.
 SILENCE_PATIENCE = 120.0
 
+#: How often a node still dialling the rendezvous says so (GPU-501).
+WAIT_SAY_EVERY = 30.0
+
 #: The forwarders of this process's gated clients. A ``PrefixStore`` takes no
 #: attributes, so nothing else could keep them alive as long as their store.
 _FORWARDERS: List["_Forwarder"] = []
@@ -439,10 +442,22 @@ def reach(address: str, deadline: float, silence: float = SILENCE_PATIENCE,
     dial = PROBE_TIMEOUT if dial is None else dial
     host, port = parse_address(address)
     quiet_since: Optional[float] = None
+    started = said = time.monotonic()
     while True:
         now = time.monotonic()
         if now >= deadline:
             return
+        if now - said >= WAIT_SAY_EVERY:
+            # Up to `outer_deadline` of waiting, and none of it was in the log
+            # (GPU-501): a node whose rendezvous name did not resolve yet
+            # read exactly like one that had hung.
+            said = now
+            logger.info(
+                "Still dialling the rendezvous at %s after %.0fs: %s. Waiting up to %.0fs more.",
+                address, now - started,
+                "no answer" if quiet_since is not None else "refused, or its name does not resolve yet",
+                deadline - now,
+            )
         try:
             sock = socket.create_connection((host, port), timeout=max(0.1, min(dial, deadline - now)))
         except socket.timeout:

@@ -70,6 +70,17 @@ def test_a_name_that_does_not_resolve_yet_is_a_machine_not_made_yet(monkeypatch)
     rendezvous.reach("node-0.runpod.internal:29400", time.monotonic() + 0.2, silence=0.05)
 
 
+def test_a_long_wait_for_the_rendezvous_is_said(monkeypatch, caplog):
+    """GPU-501: waiting on a name that does not resolve was silent for up to
+    `outer_deadline`, and read like a node that had hung."""
+    monkeypatch.setattr(rendezvous, "WAIT_SAY_EVERY", 0.0)
+    dials(monkeypatch, socket.gaierror("Name or service not known"))
+    with caplog.at_level("INFO", logger="ravex"):
+        rendezvous.reach("node-0.runpod.internal:29400", time.monotonic() + 0.1, silence=0.05)
+    said = [r.getMessage() for r in caplog.records if "Still dialling" in r.getMessage()]
+    assert said and "does not resolve yet" in said[0] and "node-0.runpod.internal:29400" in said[0]
+
+
 def test_an_answer_ends_the_silence(monkeypatch):
     """Silence that a refusal breaks starts again from zero: a node 0 that
     is booting answers in between, and the pair is not apart."""
