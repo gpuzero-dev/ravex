@@ -32,6 +32,14 @@ concurrency:
 permissions:
   contents: read
 
+# Actions by commit and the image by digest, and a timeout on every job, for
+# the reasons the top of CI.yml gives (GPU-493).
+#
+# If a run fails after `tag`, do not push to deploy again: the version is
+# tagged by then, and the `tag` job of a new run refuses it as already
+# released. Re-run the failed jobs of that same run instead. GitHub keeps
+# `ci` and `tag` as they finished, outputs included, and runs only what
+# failed, and the upload below skips what PyPI already holds.
 jobs:
   # The whole CI of this commit first, and nothing is tagged unless it
   # passes (GPU-443, GPU-487): CI before CD. A release goes out only when
@@ -47,12 +55,13 @@ jobs:
     # runs with a read-only job token and its own short-lived PyPI token.
     permissions:
       contents: write
+    timeout-minutes: 5
     outputs:
       tag: ${{ steps.tag.outputs.tag }}
     steps:
       # Not shallow: the check below has to prove the commit is on main.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -67,6 +76,9 @@ jobs:
             exit 1
           fi
 
+      # Pushed before anything is published, so a failed upload leaves the
+      # version tagged and a new push here refused. The recovery is to re-run
+      # the failed jobs of that CD run, not to push again (GPU-493).
       - name: Tag the version
         id: tag
         run: |
@@ -80,6 +92,7 @@ jobs:
           if git rev-parse -q --verify "refs/tags/$TAG" >/dev/null; then
             echo "$TAG is already released, at $(git rev-list -n1 "$TAG" | cut -c1-7)." >&2
             echo "Bump the version in a release commit on main, then push main:deploy again." >&2
+            echo "If its CD run failed after tagging, re-run that run's failed jobs instead." >&2
             exit 1
           fi
           git config user.name "github-actions[bot]"
@@ -114,15 +127,17 @@ jobs:
       contents: read
       id-token: write
     runs-on: ubuntu-latest
+    # Under a minute on every release so far: the build is one pure wheel.
+    timeout-minutes: 15
     container:
-      image: python:3.12-bookworm
+      image: python:3.12-bookworm@sha256:4209fae09a3e20afd863e528bfddc235da5fd5977983e1996cd54cc9a72e6267
     env:
       TAG: ${{ needs.tag.outputs.tag }}
     steps:
       # Full history on purpose: the check below has to prove the tagged commit
       # is on main, and a shallow clone cannot answer that question.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
           ref: ${{ needs.tag.outputs.tag }}
@@ -202,6 +217,10 @@ jobs:
           TWINE_PASSWORD=$(sh .github/scripts/trusted-token.sh pypi)
           echo "::add-mask::$TWINE_PASSWORD"
           export TWINE_PASSWORD
+          # If this step fails, the version is already tagged: re-run the
+          # failed jobs of this run rather than pushing deploy again, which
+          # would be refused (GPU-493).
+          #
           # `--skip-existing` so a re-run is harmless. Without it, uploading a
           # file PyPI already holds is a 400 whose body twine reports as just
           # "Bad Request" - which is how this pipeline's first run ever ended,

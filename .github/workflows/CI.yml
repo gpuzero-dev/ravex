@@ -32,6 +32,19 @@ on:
 permissions:
   contents: read
 
+# Pinned, all of it (GPU-493). Each action by its commit, with the tag beside
+# it: a tag can be moved by whoever controls the action, and CD.yml runs this
+# file on the commit it is about to publish. Each container image by its
+# digest: a tag like `python:3.12-bookworm` is rebuilt upstream every few
+# weeks, so the same commit could otherwise test against a different system
+# from one day to the next. Dependabot moves the actions; the digests are
+# moved by hand, with `docker buildx imagetools inspect <image:tag>`.
+#
+# And every job has a `timeout-minutes`: GitHub's default is six hours, so a
+# test that hangs would hold the runner, and a release waiting on this file,
+# that long. Each value is two to three times the slowest green run of the job
+# in November 2026, and never under ten minutes, because a job that takes one
+# can take three on a slow mirror without anything being wrong.
 jobs:
   # The engine on every interpreter we claim to support. No Moonclip here:
   # `tests/unit/test_backends.py` skips the Moonclip cases when it is absent, so
@@ -72,8 +85,20 @@ jobs:
         # torch's problem and not ours to work around. 3.15 is due final in
         # October 2026; check then.
         python: ["3.11", "3.12", "3.13", "3.14"]
+        # The image of each interpreter, by digest (see the top of the file).
+        # A new interpreter goes in both lists.
+        include:
+          - python: "3.11"
+            image: python:3.11-bookworm@sha256:726d304906fa5eb468e5531e366548d1903286352f5adb54ef508ac01fbd80c6
+          - python: "3.12"
+            image: python:3.12-bookworm@sha256:4209fae09a3e20afd863e528bfddc235da5fd5977983e1996cd54cc9a72e6267
+          - python: "3.13"
+            image: python:3.13-bookworm@sha256:cc55e4ded9c95f6ce2133b3d096db43f214d280c2a8af65d83e246c8fa7d168c
+          - python: "3.14"
+            image: python:3.14-bookworm@sha256:3fe825da0a80fa8e2cd79baadeb76b03c0ddf3d6cdbc8346778a0208b9d6038c
+    timeout-minutes: 10
     container:
-      image: python:${{ matrix.python }}-bookworm
+      image: ${{ matrix.image }}
     steps:
       - name: Install git
         run: |
@@ -86,7 +111,7 @@ jobs:
       # swallowed it, and the job tested main instead. Every PR check was a
       # green tick for code nobody had built.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -120,8 +145,9 @@ jobs:
   # interpreter instead of the image providing it.
   unit-free-threaded:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     container:
-      image: python:3.14-bookworm
+      image: python:3.14-bookworm@sha256:3fe825da0a80fa8e2cd79baadeb76b03c0ddf3d6cdbc8346778a0208b9d6038c
     steps:
       - name: Install git
         run: |
@@ -129,7 +155,7 @@ jobs:
           apt-get install -y -qq git
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -174,8 +200,11 @@ jobs:
       fail-fast: false
       matrix:
         suite: [unit, distributed]
+    # The slowest job in the file: `distributed` took 12 minutes on most runs
+    # in November 2026 and 15 on the worst, Moonclip's build included.
+    timeout-minutes: 40
     container:
-      image: python:3.12-bookworm
+      image: python:3.12-bookworm@sha256:4209fae09a3e20afd863e528bfddc235da5fd5977983e1996cd54cc9a72e6267
     steps:
       - name: Install git and Rust
         run: |
@@ -194,7 +223,7 @@ jobs:
       # swallowed it, and the job tested main instead. Every PR check was a
       # green tick for code nobody had built.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -209,11 +238,20 @@ jobs:
         run: |
           set -eu
           VGW=1.8.0
-          curl -sSfL -o /tmp/vgw.tgz             "https://github.com/versity/versitygw/releases/download/v${VGW}/versitygw_v${VGW}_Linux_x86_64.tar.gz"
+          # The sha256 versity publishes for this asset in the release's
+          # checksums.txt (GPU-493). A release asset can be replaced after the
+          # fact, and this binary runs with the job's network and files: a
+          # different one stops here instead of being run. Moving VGW means
+          # taking the new checksum from the new release.
+          VGW_SHA256=2ba2c734d10d2c4e651d03182cb4b246656bc735a2f282db7b0b73fba6073467
+          curl -sSfL -o /tmp/vgw.tgz \
+            "https://github.com/versity/versitygw/releases/download/v${VGW}/versitygw_v${VGW}_Linux_x86_64.tar.gz"
+          echo "${VGW_SHA256}  /tmp/vgw.tgz" | sha256sum -c -
           tar -xzf /tmp/vgw.tgz -C /tmp
           install -m 0755 "/tmp/versitygw_v${VGW}_Linux_x86_64/versitygw" /usr/local/bin/versitygw
           mkdir -p /tmp/s3-data/ravex-test
-          versitygw --access minioadmin --secret minioadmin --port :9000             posix /tmp/s3-data >/tmp/s3.log 2>&1 &
+          versitygw --access minioadmin --secret minioadmin --port :9000 \
+            posix /tmp/s3-data >/tmp/s3.log 2>&1 &
           for _ in $(seq 1 30); do
             code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:9000/ || true)
             if [ "$code" != "000" ]; then
@@ -281,8 +319,9 @@ jobs:
   # Mirrors integration/Dockerfile — keep the two in step.
   integration:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     container:
-      image: python:3.12-bookworm
+      image: python:3.12-bookworm@sha256:4209fae09a3e20afd863e528bfddc235da5fd5977983e1996cd54cc9a72e6267
     steps:
       - name: Install git
         run: |
@@ -295,7 +334,7 @@ jobs:
       # swallowed it, and the job tested main instead. Every PR check was a
       # green tick for code nobody had built.
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -331,8 +370,9 @@ jobs:
   # job above no longer pays for them at all, and this one runs a single file.
   integration-frameworks:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     container:
-      image: python:3.12-bookworm
+      image: python:3.12-bookworm@sha256:4209fae09a3e20afd863e528bfddc235da5fd5977983e1996cd54cc9a72e6267
     steps:
       - name: Install git
         run: |
@@ -340,7 +380,7 @@ jobs:
           apt-get install -y -qq git
 
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
         with:
           fetch-depth: 0
 
@@ -375,11 +415,19 @@ jobs:
       fail-fast: false
       matrix:
         python: ["3.11", "3.12", "3.13"]
+        include:
+          - python: "3.11"
+            image: python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39
+          - python: "3.12"
+            image: python:3.12-slim-bookworm@sha256:935c3c5b12357a7e10caa9c1e6ca5692344d97cf229832ef584be2cec9fc03df
+          - python: "3.13"
+            image: python:3.13-slim-bookworm@sha256:a5a7017efc5969e00ae2b91c8eb0631049a569652aa4ffc4501769049ae45c72
+    timeout-minutes: 10
     container:
-      image: python:${{ matrix.python }}-slim-bookworm
+      image: ${{ matrix.image }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
 
       - name: Install the wheel, as a user would
         run: |
@@ -403,8 +451,9 @@ jobs:
   # yanked, and this holds PyPI to it (GPU-296, GPU-367).
   first-run-310:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     container:
-      image: python:3.10-slim-bookworm
+      image: python:3.10-slim-bookworm@sha256:5be5aaecb962a41567bc8041f1e9e3432cb085b037fe057f9a562630b2e4b370
     steps:
       - name: pip refuses on 3.10
         run: |
