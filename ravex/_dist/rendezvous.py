@@ -63,7 +63,7 @@ import secrets
 import socket
 import threading
 import time
-from typing import TYPE_CHECKING, List, Optional, Tuple
+from typing import TYPE_CHECKING, Dict, List, Optional, Tuple
 
 if TYPE_CHECKING:
     # For `host`'s return annotation only; it imports its own at call time.
@@ -610,24 +610,47 @@ def epoch_job(job: str, epoch: int) -> str:
     return job if epoch == 0 else "%s.e%d" % (job, int(epoch))
 
 
-def answers(address: str, timeout: float = PROBE_TIMEOUT) -> bool:
-    """Whether something listens at ``address``, without becoming a client of
-    it. With a token, only a ravex gate counts: a port that is open but never
-    says ``GATE_MAGIC`` is not this run's server."""
+#: Why a probe of a rendezvous found no server there, as :func:`heard` says it.
+#: Only ``NO_ANSWER`` is a network that may not carry the pair (GPU-242): the
+#: others are a server or a machine not up yet, or not a ravex gate.
+NO_ANSWER = "no answer"
+REFUSED = "refused"
+UNRESOLVED = "its name does not resolve"
+NOT_A_GATE = "something else listens there"
+
+
+def heard(address: str, timeout: float = PROBE_TIMEOUT) -> Optional[str]:
+    """``None`` when this run's server listens at ``address``, otherwise why
+    not - one of ``NO_ANSWER``, ``REFUSED``, ``UNRESOLVED``, ``NOT_A_GATE`` -
+    without becoming a client of it. With a token, only a ravex gate counts:
+    a port that is open but never says ``GATE_MAGIC`` is not this run's
+    server. The reason is what a node waiting on the run's servers says, and
+    what tells a network that drops its packets from one not up yet
+    (GPU-501: a node waited 15 minutes in silence on a name it could not
+    reach, and nothing said whether it resolved)."""
     host, port = parse_address(address)
     try:
         sock = socket.create_connection((host, port), timeout=timeout)
+    except socket.timeout:
+        return NO_ANSWER
+    except socket.gaierror:
+        return UNRESOLVED
     except OSError:
-        return False
+        return REFUSED
     try:
         if job_token() is None:
-            return True
+            return None
         sock.settimeout(timeout)
-        return _recv(sock, len(GATE_MAGIC)) == GATE_MAGIC
+        return None if _recv(sock, len(GATE_MAGIC)) == GATE_MAGIC else NOT_A_GATE
     except OSError:
-        return False
+        return NOT_A_GATE
     finally:
         _close(sock)
+
+
+def answers(address: str, timeout: float = PROBE_TIMEOUT) -> bool:
+    """Whether this run's server listens at ``address`` (:func:`heard`)."""
+    return heard(address, timeout) is None
 
 
 def alive(store, timeout: float = PROBE_TIMEOUT) -> bool:
@@ -771,7 +794,8 @@ def opened(address: str, job: str, epoch: int, store) -> None:
         connect(address, job, timeout=PROBE_TIMEOUT).set(CURRENT_KEY, str(int(epoch)))
 
 
-def current(addresses: List[str], job: str, deadline: float, timeout: float = 300.0):
+def current(addresses: List[str], job: str, deadline: float, timeout: float = 300.0,
+            silence: float = SILENCE_PATIENCE):
     """The store of the newest open epoch among ``addresses``, for a node that
     arrives in a run already going: after a failover the first address is the
     dead one. ``(store, epoch, address)``.
@@ -779,11 +803,25 @@ def current(addresses: List[str], job: str, deadline: float, timeout: float = 30
     The first address with no epoch recorded is epoch 0, the run's until it
     dies. A later epoch counts only once opened, so a server a cut-off
     minority started is never taken for the run's.
+
+    It is also the way in of every starting node but the first when
+    ``outer_rendezvous`` lists several addresses, so it waits as
+    :func:`reach` does (GPU-501): every ``WAIT_SAY_EVERY`` seconds it says
+    why each address has no server yet, and when nothing answers and the
+    first address - where the run starts - has gone unanswered for
+    ``silence`` seconds it raises ``RegionUnreachable`` (GPU-242) rather than
+    wait out ``deadline``. On 2026-11-22 node 1 of two L40S pods waited here
+    15 minutes, silent, for a node 0 its packets never reached.
     """
+    started = said = time.monotonic()
+    quiet_since: Optional[float] = None
     while True:
         best = None
+        why: Dict[str, str] = {}
         for index, address in enumerate(addresses):
-            if not answers(address):
+            reason = heard(address)
+            if reason is not None:
+                why[address] = reason
                 continue
             try:
                 record = connect(address, job, timeout=PROBE_TIMEOUT)
@@ -809,6 +847,30 @@ def current(addresses: List[str], job: str, deadline: float, timeout: float = 30
                 # is found - where letting this out failed the arrival, every
                 # time on a machine where a connect is slow (GPU-229).
                 logger.info("The rendezvous at %s stopped answering while being joined: %s", address, exc)
-        if time.monotonic() >= deadline:
-            raise TimeoutError("no rendezvous answers among %s" % ", ".join(addresses))
+        now = time.monotonic()
+        said_why = ", ".join("%s: %s" % (address, why.get(address, "no open epoch")) for address in addresses)
+        # Only the run's first server not answering at all, with no other
+        # server up: after a failover the first is a dead machine and as
+        # silent, but then a survivor answers or refuses within seconds.
+        if why.get(addresses[0]) == NO_ANSWER and len(why) == len(addresses):
+            quiet_since = now if quiet_since is None else quiet_since
+            if now - quiet_since >= silence:
+                from ravex._dist.exchange import RegionUnreachable
+
+                raise RegionUnreachable("", -1, {}, said=(
+                    "the rendezvous at %s did not answer for %ds: no refusal, no reset, "
+                    "nothing, so the network between this node and node 0 does not carry "
+                    "it (%s). Start the run again on other machines."
+                    % (addresses[0], silence, said_why)
+                ))
+        else:
+            quiet_since = None
+        if now >= deadline:
+            raise TimeoutError("no rendezvous answers among %s" % said_why)
+        if now - said >= WAIT_SAY_EVERY:
+            said = now
+            logger.info(
+                "Still looking for the run's rendezvous after %.0fs (%s). Waiting up to %.0fs more.",
+                now - started, said_why, deadline - now,
+            )
         time.sleep(1.0)

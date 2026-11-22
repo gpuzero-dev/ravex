@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Every node but the first waits for the rendezvous as the first does
+  (GPU-501).** With several addresses in `outer_rendezvous` the other
+  starting nodes take another way in, and it waited up to `outer_deadline`
+  without a word: on 2026-11-22 node 1 of two L40S pods waited 15 minutes,
+  silent, for a node 0 its packets never reached. Every 30 s it now says why
+  each address has no server yet (no answer, refused, a name that does not
+  resolve), and when node 0's address has gone unanswered for two minutes
+  with nothing else up it raises `RegionUnreachable`, as a node with one
+  address already did (GPU-242).
+
 ## 0.14.10 — 2026-11-21
 
 ### Fixed

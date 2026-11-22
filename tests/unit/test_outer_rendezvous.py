@@ -276,7 +276,7 @@ def test_a_rendezvous_dying_while_it_is_joined_is_passed_over(monkeypatch):
             return Record(address)
         return ("store", address, job)
 
-    monkeypatch.setattr(rendezvous, "answers", lambda address, timeout=0: alive[address])
+    monkeypatch.setattr(rendezvous, "heard", lambda address, timeout=0: None if alive[address] else rendezvous.REFUSED)
     monkeypatch.setattr(rendezvous, "connect", connect)
     monkeypatch.setattr(rendezvous.time, "sleep", lambda seconds: None)
     store, epoch, address = rendezvous.current([dead, elected], "run", time.monotonic() + 30, timeout=5)

@@ -100,3 +100,72 @@ def test_past_the_deadline_the_connect_says_what_it_always_said(monkeypatch):
     that follows fails as it did, so nothing is called apart that was late."""
     dials(monkeypatch, ConnectionRefusedError("r"))
     rendezvous.reach("10.0.0.1:29400", time.monotonic() - 1)
+
+
+# ─── a probe says why, and current() waits as reach() does (GPU-501) ────
+
+
+@pytest.mark.parametrize("failure, reason", [
+    (socket.timeout("timed out"), rendezvous.NO_ANSWER),
+    (socket.gaierror("Name or service not known"), rendezvous.UNRESOLVED),
+    (ConnectionRefusedError("refused"), rendezvous.REFUSED),
+])
+def test_a_probe_says_why_no_server_is_there(monkeypatch, failure, reason):
+    dials(monkeypatch, failure)
+    assert rendezvous.heard("10.0.0.1:29400") == reason
+    assert not rendezvous.answers("10.0.0.1:29400")
+
+
+def test_a_probe_that_reaches_a_server_says_nothing(monkeypatch):
+    dials(monkeypatch, "ok")
+    assert rendezvous.heard("10.0.0.1:29400") is None
+
+
+def heard_as(monkeypatch, reasons):
+    """Every probe of an address gets its reason from ``reasons``."""
+    monkeypatch.setattr(rendezvous, "heard", lambda address, timeout=0: reasons[address])
+    real_sleep = time.sleep
+    monkeypatch.setattr(rendezvous.time, "sleep", lambda seconds: real_sleep(0.01))
+
+
+def test_a_starting_node_that_never_hears_node_0_is_the_machines_being_apart(monkeypatch):
+    """gpu501b-001: node 1 waited 15 minutes in silence, its own address
+    refused, node 0's never answering. It now says so after `silence`."""
+    node0, node1 = "n0.runpod.internal:29400", "n1.runpod.internal:29400"
+    heard_as(monkeypatch, {node0: rendezvous.NO_ANSWER, node1: rendezvous.REFUSED})
+    with pytest.raises(RegionUnreachable) as raised:
+        rendezvous.current([node0, node1], "run", time.monotonic() + 30, silence=0.1)
+    said = str(raised.value)
+    assert node0 in said and "no answer" in said and "refused" in said
+
+
+def test_the_wait_for_the_run_is_said_with_the_reason_of_each_address(monkeypatch, caplog):
+    monkeypatch.setattr(rendezvous, "WAIT_SAY_EVERY", 0.0)
+    node0, node1 = "n0:29400", "n1:29400"
+    heard_as(monkeypatch, {node0: rendezvous.UNRESOLVED, node1: rendezvous.REFUSED})
+    with caplog.at_level("INFO", logger="ravex"), pytest.raises(TimeoutError) as raised:
+        rendezvous.current([node0, node1], "run", time.monotonic() + 0.1, silence=0.0)
+    said = [r.getMessage() for r in caplog.records if "Still looking" in r.getMessage()]
+    assert said and "n0:29400: its name does not resolve" in said[0]
+    assert "does not resolve" in str(raised.value)
+
+
+def test_a_dead_first_server_is_not_the_machines_being_apart_when_another_answers(monkeypatch):
+    """After a failover the first address is a dead machine, as silent as a
+    network that drops packets; a survivor answering is what tells them apart."""
+    dead, elected = "10.0.0.1:29400", "10.0.0.2:29400"
+    heard_as(monkeypatch, {dead: rendezvous.NO_ANSWER, elected: None})
+
+    class Record:
+        def check(self, keys):
+            return True
+
+        def get(self, key):
+            return b"1"
+
+    monkeypatch.setattr(
+        rendezvous, "connect",
+        lambda address, job, timeout: Record() if job == "run" else ("store", address, job),
+    )
+    store, epoch, address = rendezvous.current([dead, elected], "run", time.monotonic() + 30, silence=0.0)
+    assert (epoch, address) == (1, elected)
