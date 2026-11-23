@@ -185,6 +185,49 @@ class TestSending:
         assert any(not entry["is_delta"] for entry in entries), entries
         assert all(entry["size_bytes"] and entry["size_bytes"] > 0 for entry in entries), entries
 
+    @pytest.mark.skipif(importlib.util.find_spec("moonclip") is None, reason="moonclip not installed")
+    def test_the_list_reaches_the_backend_before_the_first_checkpoint_step(self, storage, backend, monkeypatch):
+        # GPU-504: a delta at every step and `checkpoint_every` far ahead. The
+        # list used to go only at a `checkpoint_every` step or at the end, so
+        # a run stopped before it - a machine given back - left checkpoints
+        # in its store the backend never heard of. Now it arrives while the
+        # run trains, well before either.
+        from ravex._runtime import RavexRuntime
+
+        monkeypatch.setattr(RavexRuntime, "LIST_EVERY_SECONDS", 0.2)
+        seen = []
+
+        @ravex.train_loop(
+            backend="moonclip",
+            checkpoint_every=100,
+            metrics_chunk_every=0,
+            system_metrics_every=0,
+            metrics_endpoint=backend.url,
+        )
+        def train():
+            tiny(5)
+            run_id = ravex.runs.describe(str(storage))["run_id"]
+            deadline = time.time() + 10
+            while time.time() < deadline and not backend.checkpoints.get(run_id):
+                time.sleep(0.1)
+            seen.extend(backend.checkpoints.get(run_id) or [])
+
+        train()
+        assert seen, "no checkpoint list reached the backend while the run trained"
+
+    def test_the_same_list_is_not_sent_twice(self, tmp_path):
+        shipper = Shipper("http://127.0.0.1:9", str(tmp_path))
+        try:
+            shipper.checkpoints([{"step": 3, "is_delta": False, "size_bytes": 9}])
+            with shipper._condition:
+                shipper._checkpoints = None  # as if it had gone out
+            shipper.checkpoints([{"step": 3, "is_delta": False, "size_bytes": 9}])
+            assert shipper._checkpoints is None
+            shipper.checkpoints([{"step": 3, "is_delta": False, "size_bytes": 9}, 4])
+            assert shipper._checkpoints == [{"step": 3, "is_delta": False, "size_bytes": 9}, {"step": 4}]
+        finally:
+            shipper.close(timeout=0)
+
     def test_a_step_given_twice_is_its_last_entry(self, tmp_path):
         shipper = Shipper("http://127.0.0.1:9", str(tmp_path))
         try:

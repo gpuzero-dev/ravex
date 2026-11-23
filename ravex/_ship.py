@@ -129,6 +129,9 @@ class Shipper:
         self._chunks: Deque[str] = deque()
         self._run_dirty = False
         self._checkpoints: Optional[List[Dict[str, Any]]] = None
+        #: The last list `checkpoints` was given: the runtime gives it again
+        #: every half minute (GPU-504), and the same list is not sent twice.
+        self._last_listed: Optional[List[Dict[str, Any]]] = None
         self._headers: Dict[str, Dict[str, Any]] = {}
         self._condition = threading.Condition()
         self._closing = False
@@ -166,8 +169,12 @@ class Shipper:
             else:
                 described = {"step": int(entry)}
             by_step[described["step"]] = described
+        listed = [by_step[step] for step in sorted(by_step)]
         with self._condition:
-            self._checkpoints = [by_step[step] for step in sorted(by_step)]
+            if listed == self._last_listed:
+                return
+            self._last_listed = listed
+            self._checkpoints = listed
             self._condition.notify()
 
     @property

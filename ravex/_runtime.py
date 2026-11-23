@@ -329,6 +329,10 @@ class RavexRuntime:
         #: Sends the run to the platform's backend (GPU-156). None without
         #: `metrics_endpoint`.
         self._shipper: Any = None
+        #: Stops the thread that keeps the backend's checkpoint list current
+        #: (`_keep_listing`, GPU-504); None while there is no shipper.
+        self._listing_stop: Optional[threading.Event] = None
+        self._listing_thread: Optional[threading.Thread] = None
         #: How the run ended, for `status.json`: set by the train_loop wrapper
         #: when the function raised, so a crash does not read as "finished".
         self.exit_state = "finished"
@@ -1211,7 +1215,43 @@ class RavexRuntime:
         except Exception as exc:
             logger.warning("Cannot send this run to %s: %s", self.config.metrics_endpoint, exc)
             return None
+        self._listing_stop = threading.Event()
+        self._listing_thread = threading.Thread(
+            target=self._keep_listing, args=(self._listing_stop,), name="ravex-checkpoint-list", daemon=True
+        )
+        self._listing_thread.start()
         return self._shipper.notify
+
+    #: How often the backend's checkpoint list is brought up to date between
+    #: checkpoints (GPU-504). A class attribute so a test can shorten it.
+    LIST_EVERY_SECONDS = 30.0
+
+    def _keep_listing(self, stop: threading.Event) -> None:
+        """Send the store's checkpoint list every `LIST_EVERY_SECONDS`.
+
+        The list used to go only with `status.json`, at each `checkpoint_every`
+        step. A run that saves a delta at every step, and a full whose write
+        finishes minutes after it started, then had checkpoints in its store
+        the backend never heard of: on 2026-11-22 a two-node run stopped at
+        step 69, before its first step 100, left a complete 9.6 GB full with
+        no row, no resume to offer and no way to delete it but the whole run
+        (GPU-504). On a thread of its own because the store's listing waits
+        for the writes in flight, which can take minutes, and Moonclip lets
+        the GIL go while it waits: training is never held up by it. An
+        unchanged list is not sent again (`Shipper.checkpoints`).
+        """
+        while not stop.wait(self.LIST_EVERY_SECONDS):
+            self._ship_checkpoints()
+
+    def _stop_listing(self) -> None:
+        """Stop `_keep_listing` and wait for it, before the backend closes."""
+        if self._listing_stop is None:
+            return
+        self._listing_stop.set()
+        if self._listing_thread is not None and self._listing_thread is not threading.current_thread():
+            self._listing_thread.join()
+        self._listing_stop = None
+        self._listing_thread = None
 
     def _ship_checkpoints(self) -> None:
         """Tell the backend which steps the store holds: what a resume can pick."""
@@ -4717,6 +4757,8 @@ class RavexRuntime:
                     self._model_writer = None
                 self._metrics.close(self.registry.step_count)
                 self._metrics = None
+            # Before the backend closes: the listing thread reads it.
+            self._stop_listing()
             if self._backend is not None:
                 self._backend.close()
             if self._outer_store is not None:
