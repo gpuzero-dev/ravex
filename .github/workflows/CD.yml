@@ -237,7 +237,7 @@ jobs:
       - name: Build the sdist and the wheel
         run: |
           set -eu
-          pip install --quiet build twine
+          pip install --quiet build "twine>=6.1" pypi-attestations==0.0.31
           python -m build --outdir dist
           ls -la dist/
           twine check dist/*
@@ -254,6 +254,19 @@ jobs:
           ls "$tmp"/*/pyproject.toml "$tmp"/*/CHANGELOG.md
           pip wheel --quiet --no-deps --wheel-dir "$tmp/out" "$tmp"/*/
           ls "$tmp"/out/*.whl
+
+      # A PEP 740 attestation for each file (GPU-491): signed with Sigstore
+      # under this job's own OIDC identity - this repository, this workflow,
+      # the tagged commit - and uploaded beside the file, so anyone installing
+      # can check that PyPI's ravex was built here and not uploaded from
+      # elsewhere with a stolen token. PyPI checks it against the trusted
+      # publisher before it accepts the upload. After `twine check`, which
+      # would take the .attestation files for distributions it cannot read.
+      - name: Sign the files
+        run: |
+          set -eu
+          python -m pypi_attestations sign dist/*.whl dist/*.tar.gz
+          ls dist/*.publish.attestation
 
       - name: Upload to PyPI
         env:
@@ -276,4 +289,4 @@ jobs:
           #
           # `ravex[moonclip]` resolves its extra from PyPI, so Moonclip has to
           # be published there before this repository is tagged.
-          twine upload --skip-existing dist/*
+          twine upload --attestations --skip-existing dist/*
