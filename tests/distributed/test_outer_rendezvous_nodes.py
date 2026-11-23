@@ -163,13 +163,15 @@ def split_off_next_round(exchange):
 
 
 def a_node(address, job, min_nodes, root, name, role, queue, control_at=None,
-           member=None, kill=None, deadline=60, overlap=False):
+           member=None, kill=None, deadline=60, overlap=False, saves=False):
     """One node, started the way a rented box starts one.
 
     ``control_at`` is where the test's own keys live when ``address`` may die
     under the run; ``member`` its place in ``address``'s list; ``kill`` the
     pid of the run's server, which a node in the role ``server-dies`` kills
-    at round 3 (GPU-229)."""
+    at round 3 (GPU-229). ``saves`` turns on the checkpoints a real run
+    makes - a delta at every step, a full every `checkpoint_every` steps and
+    one on the way out - which these nodes otherwise leave off (GPU-504)."""
     try:
         for variable in ("RANK", "WORLD_SIZE", "LOCAL_RANK", "MASTER_ADDR", "MASTER_PORT"):
             os.environ.pop(variable, None)
@@ -239,9 +241,9 @@ def a_node(address, job, min_nodes, root, name, role, queue, control_at=None,
             # the one before; the failover test, the longest here, went from
             # 8 s a round to 79 s by round 10 and never reached round 15
             # (GPU-260). Off, a full every `checkpoint_every` steps is none.
-            delta=False,
-            checkpoint_every=10**9,
-            checkpoint_on_exit=False,
+            delta=saves,
+            checkpoint_every=50 if saves else 10**9,
+            checkpoint_on_exit=saves,
             outer_overlap=overlap,
         )
         def train():
@@ -867,3 +869,62 @@ def test_the_run_elects_a_new_rendezvous_when_its_own_dies(server, tmp_path, ove
     assert any("Joined the run at round" in line for line in results["d"][2]), results["d"][2]
     for name, (_, _, said) in results.items():
         assert rounds_over(said, 4), "node %s never closed a round with the joiner" % name
+
+
+def test_sigterm_on_every_node_of_an_outer_loop_ends_each_one_with_its_status_and_list(server, tmp_path):
+    """GPU-504: a run on two nodes stopped from the console.
+
+    On 2026-11-22 a two-node run got SIGTERM on both nodes at once; each
+    process was gone eight seconds later with nothing written after the
+    signal - no final checkpoint, no `status.json`, no checkpoint list - so
+    the run stayed `running` and a complete full in its store had no row.
+    Here both nodes train with the checkpoints a real run makes, are stopped
+    together once their rounds go, and each must end the way one node does
+    (GPU-294): within the grace a machine gives, with the shutdown done and
+    its store saying `interrupted`.
+    """
+    pytest.importorskip("moonclip")
+    import signal
+
+    import ravex.runs
+
+    if os.name == "nt":
+        pytest.skip("Ravex does not install a SIGTERM handler on Windows")
+    context = mp.get_context("spawn")
+    queue = context.Queue()
+    job = "sigterm-%d" % os.getpid()
+    names = ("a", "b")
+    processes = [
+        context.Process(
+            target=a_node,
+            args=(server, job, 2, str(tmp_path), name, "trains", queue),
+            kwargs={"saves": True},
+        )
+        for name in names
+    ]
+    for process in processes:
+        process.start()
+    try:
+        deadline = time.monotonic() + 180
+        while time.monotonic() < deadline:
+            said = {name: tail_of(str(tmp_path), name, lines=10**6) for name in names}
+            if all(len(rounds_over(text.splitlines(), 2)) >= 2 for text in said.values()):
+                break
+            time.sleep(0.5)
+        else:
+            pytest.fail("the nodes never closed two rounds together\n%s" % "\n".join(said.values()))
+        sent = time.monotonic()
+        for process in processes:
+            os.kill(process.pid, signal.SIGTERM)
+        for process in processes:
+            process.join(60)
+        took = time.monotonic() - sent
+        alive = [name for name, process in zip(names, processes) if process.is_alive()]
+        assert not alive, "still running %.0fs after SIGTERM: %s" % (took, alive)
+        for name in names:
+            tail = tail_of(str(tmp_path), name)
+            assert "Ravex shutdown complete" in tail, "node %s did not finish its shutdown:\n%s" % (name, tail)
+            status = ravex.runs.describe(os.path.join(str(tmp_path), name, "checkpoints"))["status"]
+            assert status["state"] == "interrupted", (name, status, tail)
+    finally:
+        end_nodes(processes, patience=5)
