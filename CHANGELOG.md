@@ -1,5 +1,24 @@
 # Changelog
 
+## 0.14.12 — 2026-11-23
+
+### Fixed
+
+- **The platform hears of every checkpoint within half a minute (GPU-504).**
+  The checkpoint list went to the backend only at a `checkpoint_every` step
+  and at the end. A two-node run stopped at step 69, before its first step
+  100, left a complete 9.6 GB full in its bucket with no row on the platform:
+  no resume to offer, and nothing in the Checkpoints tab to say what the
+  bytes were. A thread of its own now sends the list every 30 s; the store's
+  listing waits for writes in flight, so it never runs on the training
+  thread, and an unchanged list is not sent again.
+
+### Changed
+
+- **Every file on PyPI comes with a PEP 740 attestation (GPU-491)**, signed
+  with Sigstore under the release workflow's identity, so a ravex file can be
+  checked to come from this repository's CD and the tagged commit.
+
 ## 0.14.11 — 2026-11-22
 
 ### Fixed
