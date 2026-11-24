@@ -1,5 +1,30 @@
 # Changelog
 
+## 0.15.0 — 2026-11-24
+
+### Changed
+
+- **A resume that must resume stops when the model no longer fits the
+  checkpoint (GPU-497).** With `require_resume` - set by the platform on
+  every resume - a model of another shape used to be skipped with a warning:
+  fresh weights trained on under the step counter and history of the run
+  they replaced. It now stops with `ResumeRefused` and says why ("If a
+  parameter that changes the model was changed, start a new run from scratch
+  instead"), as a fork and `keep_hyperparameters` already did. A plain re-run
+  of a script without `require_resume` still warns and carries on.
+
+### Fixed
+
+- **A run whose optimizer outweighs its deltas starts with fulls (GPU-516).**
+  With Moonclip and `delta` on, a run weighed its first deltas before deciding
+  between a delta at every step and a full every `checkpoint_every`. With Adam
+  on every parameter those deltas are fulls in all but name: on deepseek-1b
+  two 9 GB saves at steps 1 and 4 stayed in the bucket, and a stop waited for
+  them to go up. At the end of the first step Ravex now compares the
+  optimizer's state with the whole checkpoint, and at half or more it starts
+  with fulls and writes nothing before the first `checkpoint_every`. A LoRA,
+  whose optimizer holds the adapters only, still starts with deltas.
+
 ## 0.14.12 — 2026-11-23
 
 ### Fixed
