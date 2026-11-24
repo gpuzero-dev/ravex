@@ -408,7 +408,9 @@ class MoonclipBackend(CheckpointBackend):
         self.saves_every_step = False
         #: Whether the deltas have been weighed against the full they stand on
         #: (GPU-418): once, early in the run, and then never again.
-        self._weighed = not config.delta
+        # `delta_every` above 1 is a cadence asked for by number, kept
+        # whatever the deltas weigh; only the link still moves it (GPU-516).
+        self._weighed = not config.delta or config.delta_every > 1
         #: Checkpoints in a row at which the bucket was more than
         #: WINDOWS_BEHIND windows behind the saves (GPU-418).
         self._behind = 0
@@ -472,10 +474,13 @@ class MoonclipBackend(CheckpointBackend):
             # sync may not have sent yet, and a pack gone between the sync's
             # listing and its read aborts the whole sync (seen 2026-10-08,
             # 20 of 50). What the window drops is the oldest, already sent.
-            window = config.checkpoint_every + 1
+            # Counted in saves: with a delta every `delta_every` steps a
+            # window of `checkpoint_every` steps holds that many fewer.
+            every = config.delta_every
+            window = max(config.checkpoint_every // every, 1) + 1
             kwargs.update(
                 full_every_steps=config.effective_full_every,
-                max_deltas_per_full=config.effective_full_every,
+                max_deltas_per_full=max(config.effective_full_every // every, 1),
                 max_total_snapshots=window,
                 # Fulls are never the binding cap: dropping the oldest one
                 # takes its deltas with it, and would cut the window short.
@@ -502,7 +507,9 @@ class MoonclipBackend(CheckpointBackend):
                 # the files are immutable, the manifest goes last - so each
                 # one costs the new snapshot or delta and no more.
                 sync_every_n_saves=(
-                    config.checkpoint_every if self.saves_every_step else 1
+                    max(config.checkpoint_every // config.delta_every, 1)
+                    if self.saves_every_step
+                    else 1
                 ),
             )
         return kwargs

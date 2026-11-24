@@ -29,6 +29,7 @@ ravex status
 | `max_steps` | `RAVEX_MAX_STEPS` | `null` | Hard stop, in optimizer steps. See [Step budgets](#step-budgets). |
 | `backend` | `RAVEX_BACKEND` | `moonclip` | `moonclip` or `torch_save`. Falls back to `torch_save` if Moonclip is missing. |
 | `delta` | `RAVEX_DELTA` | `true` | Moonclip only: a delta against the last full at every step. Off, a full every `checkpoint_every`. |
+| `delta_every` | `RAVEX_DELTA_EVERY` | `1` | Moonclip with `delta` on: steps between two deltas. Above 1 the cadence is kept whatever the deltas weigh; only a bucket that falls behind moves the run to fulls. See [A delta at every step](#a-delta-at-every-step). |
 | `keep_base_in_memory` | `RAVEX_KEEP_BASE_IN_MEMORY` | `true` | Moonclip only: keep the last full snapshot's bytes resident so the next delta does not have to read them back. Costs a copy of the saved state. See [The write path](#the-write-path). |
 | `async_save` | `RAVEX_ASYNC_SAVE` | `true` | Moonclip only: write in the background. Off, the loop stops until the checkpoint is durable. Diagnostic; see [The write path](#the-write-path). |
 | `compression` | `RAVEX_COMPRESSION` | `zstd` | `zstd` or `none`. |
@@ -420,6 +421,15 @@ it or more (Adam on every parameter is two thirds), the run starts with a full
 every `checkpoint_every` steps and writes nothing before the first. A state
 the optimizer is a small part of - a LoRA, whose optimizer holds the adapters
 only - still starts with deltas and is weighed as above.
+
+**A delta every few steps** (`delta_every`). A delta taken further from its
+full weighs more: with AdamW on 25M parameters, 76% of a full after one step,
+85% after five, 91% after twenty. Fewer deltas still write less in all - over
+a window of 100 steps about 17 fulls' worth at a delta every 5 steps against
+76 at every step - for a resume every 5 steps instead of every one. With
+`delta_every` above 1 the cadence is what the run was asked for, so Ravex no
+longer weighs the deltas to move to fulls; a bucket that falls behind still
+does.
 
 **When the link does not keep up, the run saves fulls too.** A delta can be
 light and still more than the link to the bucket takes: 19 MB a step at

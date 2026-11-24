@@ -829,7 +829,10 @@ class RavexRuntime:
 
         if (
             self.registry.step_count % self.config.checkpoint_every == 0
-            or self._saves_every_step()
+            or (
+                self._saves_every_step()
+                and self.registry.step_count % self.config.delta_every == 0
+            )
         ):
             # Not here: this is the middle of the iteration, before the LR
             # scheduler has stepped. Flag it and collect at the top of the next
@@ -898,6 +901,9 @@ class RavexRuntime:
             return every
         if not (self.config.backend == "moonclip" and self.config.delta):
             return False
+        if self.config.delta_every > 1:
+            # Asked for by number: deltas at that cadence, weighed or not.
+            return True
         why = self._optimizer_outweighs_deltas()
         if why:
             logger.info(

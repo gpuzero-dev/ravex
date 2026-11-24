@@ -716,6 +716,45 @@ def test_adam_on_a_small_head_still_starts_with_deltas(tmp_path, monkeypatch):
     assert any(is_delta for _, is_delta in kept), kept
 
 
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_a_delta_every_five_steps_saves_at_those_steps_and_keeps_the_deltas(tmp_path, monkeypatch):
+    """`delta_every` is a cadence asked for by number: saves at its multiples
+    only, and deltas even where the optimizer would have moved the run to
+    fulls on its own (GPU-516)."""
+    import ravex
+    from ravex import _backends
+    from ravex._backends import MoonclipBackend
+
+    monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
+    monkeypatch.chdir(tmp_path)
+
+    @ravex.train_loop(backend="moonclip", checkpoint_every=20, delta_every=5, resume=True)
+    def train():
+        torch.manual_seed(0)
+        model = torch.nn.Linear(64, 64)
+        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+        while ravex.step() < 20:
+            optimizer.zero_grad()
+            model(torch.randn(4, 64)).pow(2).mean().backward()
+            optimizer.step()
+
+    train()
+    reader = MoonclipBackend(make_config(tmp_path, backend="moonclip", checkpoint_every=20, delta_every=5))
+    kept = [(entry["step"], entry["is_delta"]) for entry in reader.known_checkpoints()]
+    reader.close()
+    assert [step for step, _ in kept] == [5, 10, 15, 20], kept
+    assert any(is_delta for _, is_delta in kept), kept
+
+
+def test_delta_every_comes_from_the_environment_and_is_at_least_one(monkeypatch):
+    from ravex._config import RavexConfig
+
+    monkeypatch.setenv("RAVEX_DELTA_EVERY", "5")
+    assert RavexConfig.load().delta_every == 5
+    monkeypatch.setenv("RAVEX_DELTA_EVERY", "0")
+    assert RavexConfig.load().delta_every == 1
+
+
 # ─── whether the link keeps up with a delta at every step (GPU-418) ──
 
 
