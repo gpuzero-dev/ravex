@@ -652,6 +652,14 @@ class MoonclipBackend(CheckpointBackend):
             % (step - since, "step %d" % there if there is not None else "none yet"),
         )
 
+    def start_with_fulls(self, step: int, why: str) -> None:
+        """Go on with fulls before the deltas are weighed, because the runtime
+        already knows they would weigh a full (GPU-516): the optimizer's state
+        alone is past `DELTA_WORTH`, and the deltas written to weigh it would
+        be fulls in all but name."""
+        if not self._weighed:
+            self._go_full(step, why)
+
     def _go_full(self, step: int, why: str) -> None:
         """Go on with a full every `checkpoint_every` steps, `keep_last` of
         them, as with `delta: false`, saying `why` once (GPU-418).

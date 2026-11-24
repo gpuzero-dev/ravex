@@ -887,15 +887,29 @@ class RavexRuntime:
         the next step on.
         """
         if self._backend is not None:
-            return bool(getattr(self._backend, "saves_every_step", False))
+            every = bool(getattr(self._backend, "saves_every_step", False))
+            # Open already when a run looks for a checkpoint to resume from,
+            # which is before its first step: the deltas are not weighed yet.
+            if every and not getattr(self._backend, "_weighed", True):
+                why = self._optimizer_outweighs_deltas()
+                if why:
+                    self._backend.start_with_fulls(self.registry.step_count, why)
+                    return False
+            return every
         if not (self.config.backend == "moonclip" and self.config.delta):
             return False
-        if self._optimizer_outweighs_deltas():
+        why = self._optimizer_outweighs_deltas()
+        if why:
+            logger.info(
+                "%s Nothing is wrong: this run saves a full every %d steps and keeps "
+                "%d, and a resume starts from the last of them rather than from any step.",
+                why, self.config.checkpoint_every, self.config.keep_last,
+            )
             self.config.delta = False
             return False
         return True
 
-    def _optimizer_outweighs_deltas(self) -> bool:
+    def _optimizer_outweighs_deltas(self) -> Optional[str]:
         """Whether the optimizer's state alone makes a delta weigh a full,
         known before anything is written (GPU-516).
 
@@ -911,7 +925,8 @@ class RavexRuntime:
         backend's measurement, as before.
 
         Asked at the end of a step, once the optimizer has its state: before
-        its first step it has none, and the answer is "not yet".
+        its first step it has none, and the answer is "not yet". The reason
+        when it does, for the log; None when deltas may still be worth it.
         """
         import torch
 
@@ -929,7 +944,7 @@ class RavexRuntime:
             if isinstance(value, torch.Tensor) and value.dim() > 0
         )
         if not moments:
-            return False
+            return None
         weights = sum(
             size(value)
             for _, model in self.registry.keyed_models()
@@ -937,15 +952,11 @@ class RavexRuntime:
         )
         total = moments + weights
         if total < FULL_WORTH_WEIGHING or moments / total < DELTA_WORTH:
-            return False
-        logger.info(
+            return None
+        return (
             "The optimizer's state is %.0f%% of a checkpoint and changes at every "
-            "step, so a delta would weigh about a full. Nothing is wrong: this run "
-            "saves a full every %d steps and keeps %d, and a resume starts from "
-            "the last of them rather than from any step.",
-            100 * moments / total, self.config.checkpoint_every, self.config.keep_last,
+            "step, so a delta would weigh about a full." % (100 * moments / total)
         )
-        return True
 
     def _is_checkpoint_step(self, step: int) -> bool:
         """Whether ``step`` is a checkpoint, and not one of the deltas between."""

@@ -657,7 +657,7 @@ def test_a_run_whose_deltas_are_not_worth_it_saves_a_full_every_checkpoint(tmp_p
     assert [(entry["step"], entry["is_delta"]) for entry in kept] == [(15, False), (20, False)]
 
 
-def _train_and_list(tmp_path, monkeypatch, frozen):
+def _train_and_list(tmp_path, monkeypatch, frozen, resume=False):
     """Twelve steps through `train_loop` with Adam, a full every five, and
     every checkpoint kept so none is hidden by retention."""
     import ravex
@@ -667,7 +667,7 @@ def _train_and_list(tmp_path, monkeypatch, frozen):
     monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
     monkeypatch.chdir(tmp_path)
 
-    @ravex.train_loop(backend="moonclip", checkpoint_every=5, keep_last=10, resume=False)
+    @ravex.train_loop(backend="moonclip", checkpoint_every=5, keep_last=10, resume=resume)
     def train():
         torch.manual_seed(0)
         body = torch.nn.Linear(64, 64)
@@ -697,6 +697,15 @@ def test_adam_on_every_parameter_starts_with_fulls_and_writes_nothing_before_the
     9 GB fulls at steps 1 and 4 that stayed in the bucket."""
     # 12 is the final checkpoint, written as the run ends.
     assert _train_and_list(tmp_path, monkeypatch, frozen=False) == [(5, False), (10, False), (12, False)]
+
+
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_the_same_when_the_run_looked_for_a_checkpoint_to_resume_first(tmp_path, monkeypatch):
+    """With `resume` on - the default, and the platform's - the store is open
+    before the first step, to look for a checkpoint. On gpu516-001 that left
+    the check above unasked, and deepseek-1b saved at steps 1 to 4 again."""
+    kept = _train_and_list(tmp_path, monkeypatch, frozen=False, resume=True)
+    assert kept == [(5, False), (10, False), (12, False)]
 
 
 @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
