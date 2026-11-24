@@ -57,6 +57,28 @@ class TestRequireResume:
         with pytest.raises(NothingToResume):
             ravex.train_loop(backend="torch_save", checkpoint_every=2)(lambda: script(4, {}))()
 
+    def test_a_model_of_another_shape_stops_the_run_and_says_why(self, storage):
+        # GPU-497: the same run resumed with a parameter that changes the
+        # model. Before, the step counter came back around fresh weights.
+        ravex.train_loop(backend="torch_save", checkpoint_every=2)(lambda: script(4, {}))()
+
+        def wider():
+            model = torch.nn.Linear(4, 3)
+            optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
+            ravex.track(model=model, optimizer=optimizer)
+            while ravex.step() < 6:
+                ravex.batch_boundary()
+                model(torch.randn(2, 4)).sum().backward()
+                # The resume runs inside the first optimizer step.
+                optimizer.step()
+                pytest.fail("a model the checkpoint does not fit trained under the old run")
+
+        from ravex._resume import ResumeRefused
+
+        loop = ravex.train_loop(backend="torch_save", checkpoint_every=2, require_resume=True)
+        with pytest.raises(ResumeRefused, match="does not fit it.*start a new run"):
+            loop(wider)()
+
     def test_without_it_an_empty_store_starts_from_scratch(self, storage):
         seen = {}
         ravex.train_loop(backend="torch_save", checkpoint_every=2)(lambda: script(2, seen))()

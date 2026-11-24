@@ -260,7 +260,10 @@ class RavexConfig:
     #: here or in its remote, stop rather than train from scratch. For a
     #: resume somebody asked for - an agent sets it for the platform's
     #: "resume" - where step 0 under the run's own name would overwrite its
-    #: identity and pay for training it already did.
+    #: identity and pay for training it already did. A checkpoint the model
+    #: no longer fits (a parameter that changes its shape was changed) stops
+    #: it too, with that said, rather than training fresh weights under the
+    #: old run's steps (GPU-497).
     require_resume: bool = False
 
     #: Start this run as a fork of another (GPU-149): the store of the run it

@@ -2982,8 +2982,15 @@ class RavexRuntime:
                         ", here or in its remote" if self.config.storage.is_remote else "",
                     )
                 )
-            if resumed and chosen is not None:
+            # A resume somebody asked for is that run carrying on, so a model
+            # the checkpoint has no state for stops it, as for a fork: with
+            # the step counter restored around fresh weights it would be a new
+            # model filed under the old run's history. The platform no longer
+            # knows which parameters change the model, so this is the one
+            # place that can say it (GPU-497).
+            if resumed and (chosen is not None or self.config.require_resume):
                 self._require_everything_restored()
+            if resumed and chosen is not None:
                 self._keep_hyperparameters(chosen)
                 logger.info("Resumed with this script's hyperparameters, as keep_hyperparameters asks")
             self._restore_extra_state(resume_manager.restored_extra)
