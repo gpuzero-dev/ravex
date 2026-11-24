@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.15.1 — 2026-11-24
+
+### Fixed
+
+- **The check on the optimizer also covers a store opened to look for a
+  resume (GPU-516).** With `resume` on - the default, and the platform's -
+  the store is open before the first step, and 0.15.0 asked only when it was
+  not: on a GPU deepseek-1b still saved at steps 1 to 4. Now a store that has
+  not weighed its deltas yet goes on with fulls before writing one.
+
 ## 0.15.0 — 2026-11-24
 
 ### Changed
