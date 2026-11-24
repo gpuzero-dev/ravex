@@ -657,6 +657,56 @@ def test_a_run_whose_deltas_are_not_worth_it_saves_a_full_every_checkpoint(tmp_p
     assert [(entry["step"], entry["is_delta"]) for entry in kept] == [(15, False), (20, False)]
 
 
+def _train_and_list(tmp_path, monkeypatch, frozen):
+    """Twelve steps through `train_loop` with Adam, a full every five, and
+    every checkpoint kept so none is hidden by retention."""
+    import ravex
+    from ravex import _backends
+    from ravex._backends import MoonclipBackend
+
+    monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
+    monkeypatch.chdir(tmp_path)
+
+    @ravex.train_loop(backend="moonclip", checkpoint_every=5, keep_last=10, resume=False)
+    def train():
+        torch.manual_seed(0)
+        body = torch.nn.Linear(64, 64)
+        head = torch.nn.Linear(64, 4)
+        model = torch.nn.Sequential(body, head)
+        for parameter in body.parameters():
+            parameter.requires_grad_(not frozen)
+        optimizer = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=0.01)
+        while ravex.step() < 12:
+            optimizer.zero_grad()
+            model(torch.randn(4, 64)).pow(2).mean().backward()
+            optimizer.step()
+
+    train()
+    reader = MoonclipBackend(make_config(tmp_path, backend="moonclip", keep_last=10))
+    kept = reader.known_checkpoints()
+    reader.close()
+    return [(entry["step"], entry["is_delta"]) for entry in kept]
+
+
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_adam_on_every_parameter_starts_with_fulls_and_writes_nothing_before_the_first_checkpoint(
+    tmp_path, monkeypatch
+):
+    """GPU-516: Adam's moments are two thirds of the state and change at every
+    step, so deltas cannot be light. Weighing them first cost deepseek-1b two
+    9 GB fulls at steps 1 and 4 that stayed in the bucket."""
+    # 12 is the final checkpoint, written as the run ends.
+    assert _train_and_list(tmp_path, monkeypatch, frozen=False) == [(5, False), (10, False), (12, False)]
+
+
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_adam_on_a_small_head_still_starts_with_deltas(tmp_path, monkeypatch):
+    """A frozen body and a trained head - the shape of a LoRA - may delta well:
+    the optimizer holds a small share, and the backend measures as before."""
+    kept = _train_and_list(tmp_path, monkeypatch, frozen=True)
+    assert any(is_delta for _, is_delta in kept), kept
+
+
 # ─── whether the link keeps up with a delta at every step (GPU-418) ──
 
 

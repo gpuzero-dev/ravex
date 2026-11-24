@@ -888,7 +888,64 @@ class RavexRuntime:
         """
         if self._backend is not None:
             return bool(getattr(self._backend, "saves_every_step", False))
-        return self.config.backend == "moonclip" and self.config.delta
+        if not (self.config.backend == "moonclip" and self.config.delta):
+            return False
+        if self._optimizer_outweighs_deltas():
+            self.config.delta = False
+            return False
+        return True
+
+    def _optimizer_outweighs_deltas(self) -> bool:
+        """Whether the optimizer's state alone makes a delta weigh a full,
+        known before anything is written (GPU-516).
+
+        Adam's moments change at every step for every trainable parameter,
+        and Moonclip stores a changed tensor whole, so a delta weighs at least
+        the optimizer's state. When that is already the share of a full past
+        which deltas are not worth it (`DELTA_WORTH`), the deltas the backend
+        would write to weigh them (GPU-418) are fulls in all but name: on
+        deepseek-1b two of them, 9 GB each, stayed in the bucket and a stop
+        waited for them to go up. The run starts with a full every
+        `checkpoint_every` instead. A state that may still delta well - a
+        LoRA, whose optimizer holds the adapters only - is left to the
+        backend's measurement, as before.
+
+        Asked at the end of a step, once the optimizer has its state: before
+        its first step it has none, and the answer is "not yet".
+        """
+        import torch
+
+        from ravex._backends import DELTA_WORTH, FULL_WORTH_WEIGHING
+        from ravex._dist.collectives import unwrap_model
+
+        def size(tensor: Any) -> int:
+            return tensor.numel() * tensor.element_size() if isinstance(tensor, torch.Tensor) else 0
+
+        moments = sum(
+            size(value)
+            for _, optimizer in self.registry.keyed_optimizers()
+            for state in optimizer.state.values()
+            for value in state.values()
+            if isinstance(value, torch.Tensor) and value.dim() > 0
+        )
+        if not moments:
+            return False
+        weights = sum(
+            size(value)
+            for _, model in self.registry.keyed_models()
+            for value in unwrap_model(model).state_dict().values()
+        )
+        total = moments + weights
+        if total < FULL_WORTH_WEIGHING or moments / total < DELTA_WORTH:
+            return False
+        logger.info(
+            "The optimizer's state is %.0f%% of a checkpoint and changes at every "
+            "step, so a delta would weigh about a full. Nothing is wrong: this run "
+            "saves a full every %d steps and keeps %d, and a resume starts from "
+            "the last of them rather than from any step.",
+            100 * moments / total, self.config.checkpoint_every, self.config.keep_last,
+        )
+        return True
 
     def _is_checkpoint_step(self, step: int) -> bool:
         """Whether ``step`` is a checkpoint, and not one of the deltas between."""

@@ -410,6 +410,17 @@ says so once, in a warning with both sizes. A resume from then on starts from
 the last full, and weighs its first deltas again. Below 64 MiB a full is
 small enough that its write at every step costs nothing worth that trade.
 
+**When the optimizer already outweighs, it starts with fulls** (GPU-516). The
+deltas it would weigh are fulls in all but name, and on deepseek-1b two of
+them, 9 GB each at steps 1 and 4, stayed in the bucket and made a stop wait
+for them. So at the end of the first step, before anything is written, Ravex
+compares the optimizer's state with the whole checkpoint: Adam's moments
+change at every step, so a delta weighs at least them. When they are half of
+it or more (Adam on every parameter is two thirds), the run starts with a full
+every `checkpoint_every` steps and writes nothing before the first. A state
+the optimizer is a small part of - a LoRA, whose optimizer holds the adapters
+only - still starts with deltas and is weighed as above.
+
 **When the link does not keep up, the run saves fulls too.** A delta can be
 light and still more than the link to the bucket takes: 19 MB a step at
 fourteen steps a second is 270 MB/s, and R2 from a rented node takes a few
