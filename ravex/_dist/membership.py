@@ -1196,6 +1196,7 @@ def state_digest(loop) -> str:
     payload would ship, a slice at a time, so a node that has never stepped
     does not allocate a buffer the size of its model to be hashed (GPU-443).
     """
+    import ctypes
     import hashlib
 
     import torch
@@ -1229,7 +1230,11 @@ def state_digest(loop) -> str:
         value = torch.as_tensor(value).detach().contiguous()
         digest.update(str(value.dtype).encode("utf-8"))
         digest.update(repr(tuple(value.shape)).encode("utf-8"))
-        digest.update(value.cpu().reshape(-1).view(torch.uint8).numpy().tobytes())
+        flat = value.cpu().reshape(-1).view(torch.uint8)
+        if flat.numel():
+            # The bytes where they lie, with no copy and no NumPy: the
+            # free-threaded build has none, and `.numpy()` raised there.
+            digest.update((ctypes.c_char * flat.numel()).from_address(flat.data_ptr()))
     return digest.hexdigest()
 
 
