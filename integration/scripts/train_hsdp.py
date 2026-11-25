@@ -24,15 +24,25 @@ import torch.distributed as dist
 import torch.nn as nn
 
 
+class Block(nn.Module):
+    """``x + gelu(linear(x))``. Residual because a plain stack of these died
+    on two RTX PRO 4500: by step 50 every output was exactly zero, and the
+    loss was the data's own mean square, the same whatever the weights."""
+
+    def __init__(self, hidden):
+        super().__init__()
+        self.linear = nn.Linear(hidden, hidden)
+
+    def forward(self, x):
+        return x + torch.nn.functional.gelu(self.linear(x))
+
+
 def build_model(target_params, hidden):
-    """Square Linears sized to a parameter count: the sharding is under test,
+    """Square blocks sized to a parameter count: the sharding is under test,
     not the architecture."""
     per_layer = hidden * hidden + hidden
     layers = max(2, round(target_params / per_layer))
-    blocks = []
-    for _ in range(layers):
-        blocks += [nn.Linear(hidden, hidden), nn.GELU()]
-    return nn.Sequential(*blocks)
+    return nn.Sequential(*[Block(hidden) for _ in range(layers)])
 
 
 @ravex.train_loop()
@@ -64,7 +74,11 @@ def main():
             fully_shard(layer, mesh=mesh)
     fully_shard(model, mesh=mesh)
     model.to(device)
-    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-3)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=1e-4)
+    # What there is to learn: a fixed linear map, the same on every node, so
+    # the loss is an error the training can bring down.
+    target = torch.randn(args.hidden, args.hidden, generator=torch.Generator().manual_seed(42))
+    target = (target / args.hidden ** 0.5).to(device)
 
     # The data is a function of the step and the process, so each of them
     # trains on something of its own and nothing needs a dataset on disk.
@@ -72,7 +86,7 @@ def main():
     started = time.monotonic()
     for _ in range(args.steps):
         x = torch.randn(args.batch, args.hidden, generator=generator).to(device)
-        loss = (model(x) - x).pow(2).mean()
+        loss = (model(x) - x @ target).pow(2).mean()
         loss.backward()
         optimizer.step()
         optimizer.zero_grad()
