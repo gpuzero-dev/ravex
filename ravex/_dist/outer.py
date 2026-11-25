@@ -234,8 +234,19 @@ def trainable(model) -> List[Tuple[str, Any]]:
     fine-tune has parameters that no local step moves, so their delta is zero
     by construction and exchanging them would be the largest single waste on
     the slowest link in the system.
+
+    **A sharded parameter is this process's shard** (GPU-213, HSDP). Under
+    FSDP2 a parameter is a DTensor, and what this process holds of it is its
+    local tensor: that is what it trains, and what it exchanges with the
+    process holding the same shard on every other node, in a round of its
+    own. ``to_local()`` shares the parameter's memory, so writing the outer
+    parameters back into it writes into the model.
     """
-    return [(name, p) for name, p in model.named_parameters() if p.requires_grad]
+    return [
+        (name, p.to_local() if callable(getattr(p, "to_local", None)) else p)
+        for name, p in model.named_parameters()
+        if p.requires_grad
+    ]
 
 
 def float_buffers(model) -> List[str]:

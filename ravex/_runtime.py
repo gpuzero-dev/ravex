@@ -1698,6 +1698,77 @@ class RavexRuntime:
         record = read_json(os.path.join(self.config.storage.path, RUN_FILE))
         return bool(record and record.get("run_id"))
 
+    def _node_shard(self) -> Optional[Tuple[int, int]]:
+        """``(shard, shards)`` when this process is one of several on its node
+        of an outer-loop run, else None (GPU-213, HSDP).
+
+        With ``outer_rendezvous`` the nodes meet at Ravex's own server, so a
+        torch process group, when there is one, is the node's own: torchrun
+        inside each machine, FSDP or DDP across its GPUs. Its rank is the
+        shard. Process ``r`` of every node exchanges with process ``r`` of the
+        others, in a run of its own on the same server (`_outer_job`): with
+        FSDP that is its shard of every parameter, so each GPU moves its part
+        of the model over the network at the same time as the others.
+        """
+        if not self.config.outer_rendezvous:
+            return None
+        world = get_world_size()
+        if world < 2:
+            return None
+        return get_rank(), world
+
+    def _shard_suffix(self) -> str:
+        """What sets one shard's job, rounds and outer state apart from another
+        on the same node: nothing on a node of one process."""
+        shard = self._node_shard()
+        return "" if shard is None else ".shard%d" % shard[0]
+
+    def _outer_job(self) -> str:
+        return self.config.outer_job + self._shard_suffix()
+
+    def _outer_root(self) -> Optional[str]:
+        root = self.config.outer_root
+        return root + self._shard_suffix() if root else root
+
+    def _check_node_shards(self) -> None:
+        """Refuse an HSDP run the shards could not keep together (GPU-213).
+
+        The processes of a node train one model between them, so every one has
+        to close its round at the same step, and each closes it in a run of its
+        own. A round counted in steps does: the processes take the same steps.
+        On the clock, or with H moved by each run's own measurements, they
+        would close at different steps and the node would hold shards of
+        different rounds.
+
+        And every process of a node has to be the same node in its run, or the
+        seed round would put together shards of different nodes' starting
+        models: ``outer_member``, which the platform gives every node, asked
+        for by each.
+
+        shortcut: rounds in steps and a given node number only; a node agreeing
+        on a round closed by the clock, or numbering itself, would need its
+        processes to talk every step.
+        """
+        shard = self._node_shard()
+        if shard is None:
+            return
+        reasons = []
+        if self.config.outer_round_seconds:
+            reasons.append("outer_round_seconds closes rounds on each process's clock")
+        if self.config.outer_auto_steps:
+            reasons.append("outer_auto_steps moves H by each shard's own measurements")
+        if self.config.outer_member is None:
+            reasons.append(
+                "outer_member (RAVEX_OUTER_MEMBER) is not set, and every process of a "
+                "node has to ask for the node's number"
+            )
+        if reasons:
+            raise RuntimeError(
+                "this node trains with %d processes, each exchanging its own shard, "
+                "and they have to close every round together: %s"
+                % (shard[1], "; ".join(reasons))
+            )
+
     def _build_outer_loop(self):
         """Open the round exchange and the outer loop, or explain the refusal.
 
@@ -1723,6 +1794,7 @@ class RavexRuntime:
                 % len(models)
             )
 
+        self._check_node_shards()
         address = self.config.outer_rendezvous
         joining = False
         ceiling = None
@@ -1768,7 +1840,7 @@ class RavexRuntime:
         # and every member computes the same answer for the same round.
         self._membership = Membership(store, rank, world, ceiling=ceiling)
         self.store_for_joins = store
-        root = self.config.outer_root or os.path.join(self._rounds_base(), str(rank))
+        root = self._outer_root() or os.path.join(self._rounds_base(), str(rank))
         exchange = self._open_exchange(rank, store, root)
         self._exchange = exchange
         self._region_exchanges = self._open_region_exchanges(rank, store, root, exchange)
@@ -1880,8 +1952,12 @@ class RavexRuntime:
         if self._outer_store is None:
             from ravex._backends import _per_rank_config, get_backend, outer_store_config
 
+            # One store per shard of a node (GPU-213): each process holds the
+            # outer state of its own shard, in a rank directory as a per-rank
+            # checkpoint's is.
+            per_rank = self._per_rank_active() or self._node_shard() is not None
             self._outer_store = get_backend(
-                outer_store_config(_per_rank_config(self.config, self._per_rank_active()))
+                outer_store_config(_per_rank_config(self.config, per_rank))
             )
         return self._outer_store
 
@@ -2228,13 +2304,13 @@ class RavexRuntime:
         GPU-235 bench - for files that matter only while their round is open.
         Nothing reads them from the store: a peer fetches a report over the
         exchange, and a rejoin or a failover opens a directory of its own."""
-        return os.path.normpath(self.config.storage.path) + ".rounds"
+        return os.path.normpath(self.config.storage.path) + ".rounds" + self._shard_suffix()
 
     def _round_root(self, node: int) -> str:
         """Where node ``node`` stages its round reports. Under the epoch, after
         a failover: numbers start from zero again there, and a directory of
         the previous epoch's node with the same number is not this one's."""
-        base = self.config.outer_root or self._rounds_base()
+        base = self._outer_root() or self._rounds_base()
         if self._epoch:
             base = os.path.join(base, "e%d" % self._epoch)
         return os.path.join(base, "node%d" % node) if self.config.outer_root else \
@@ -2291,7 +2367,7 @@ class RavexRuntime:
         from ravex._dist.membership import join as join_run
 
         addresses = _rendezvous.candidates(self.config.outer_rendezvous)
-        job = self.config.outer_job
+        job = self._outer_job()
         patience = float(self.config.outer_deadline)
         epoch = self._epoch + 1
         # The last round's peers are the others; the round was this node's too.
@@ -2440,7 +2516,7 @@ class RavexRuntime:
         """
         from ravex._dist import rendezvous as _rendezvous
 
-        job = self.config.outer_job
+        job = self._outer_job()
         base = int(self.config.outer_min_nodes)
         addresses = _rendezvous.candidates(address)
         patience = float(self.config.outer_deadline)

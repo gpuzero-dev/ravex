@@ -2,6 +2,20 @@
 
 ## Unreleased
 
+### Added
+
+- **HSDP: a node of several processes in the outer loop (GPU-213).** With
+  `outer_rendezvous` and torchrun inside each machine, process `r` of every
+  node exchanges its own shard of the model with process `r` of the others,
+  in a run of its own on the same rendezvous (`<outer_job>.shard<r>`). Under
+  FSDP2 a parameter is a DTensor and the outer loop trains its local shard,
+  so each GPU sends its part of the model at the same time as the others
+  instead of one process sending all of it. Each shard keeps its rounds and
+  its outer state in a directory of its own. The processes of a node have to
+  close every round at the same step, so such a node takes rounds counted in
+  steps and its `outer_member`, and refuses `outer_round_seconds` and
+  `outer_auto_steps`.
+
 ### Changed
 
 - **A node joins a run a round sooner (GPU-213).** A joiner announced the
