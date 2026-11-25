@@ -237,8 +237,9 @@ def test_moonclip_can_be_asked_for_a_specific_step(tmp_path):
 
 @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
 def test_moonclip_keeps_a_window_of_checkpoint_every_steps(tmp_path):
-    """A delta per step, and the store holds the last `checkpoint_every` of
-    them - each one a step to come back to - plus the full they stand on."""
+    """Whatever is saved, the store holds the last `checkpoint_every` steps by
+    age - each one a step to come back to - and the full they stand on
+    (GPU-517). These states delta badly, so they are fulls, and step 1 goes."""
     from ravex._backends import MoonclipBackend
 
     backend = MoonclipBackend(
@@ -249,9 +250,13 @@ def test_moonclip_keeps_a_window_of_checkpoint_every_steps(tmp_path):
         backend.save(step, sample_state(step), {"step": str(step)})
     backend.flush()
 
-    assert backend.known_steps() == [1, 9, 10, 11, 12]
+    assert backend.known_steps() == [8, 9, 10, 11, 12]
     assert backend.load_step(10)["step"] == 10
-    assert backend.load_step(8) is None, "step 8 slid out of the window"
+    # From the checkpoint at the window's start on: with one save per
+    # checkpoint that is the previous checkpoint, a fallback if the newest
+    # will not read (GPU-241).
+    assert backend.load_step(8)["step"] == 8
+    assert backend.load_step(7) is None, "step 7 slid out of the window"
     backend.close()
 
 
@@ -265,14 +270,27 @@ def test_moonclip_says_which_checkpoints_are_deltas_and_what_each_weighs(tmp_pat
     backend = MoonclipBackend(
         make_config(tmp_path, backend="moonclip", checkpoint_every=4, full_every=100)
     )
+    base = torch.randn(4096, generator=torch.Generator().manual_seed(0))
+
+    def barely_moved(step):
+        # One weight of many moves: a delta of this state is light, and pays.
+        state = sample_state(step)
+        weight = base.clone()
+        weight[0] += step
+        state["models"]["model_a"]["weight"] = weight
+        return state
+
     for step in range(1, 13):
-        backend.save(step, sample_state(step), {"step": str(step)})
+        backend.save(step, barely_moved(step), {"step": str(step)})
     backend.flush()
 
     entries = backend.known_checkpoints()
     assert [entry["step"] for entry in entries] == backend.known_steps()
-    assert [entry["step"] for entry in entries if not entry["is_delta"]] == [1], entries
-    assert all(entry["is_delta"] for entry in entries[1:]), entries
+    fulls = [entry["step"] for entry in entries if not entry["is_delta"]]
+    # The delta at step 2 paid, so step 3 was a full to hold as the base; the
+    # one at step 1 stays beside it, to fall back on (GPU-241, GPU-517).
+    assert fulls == [1, 3], entries
+    assert all(entry["is_delta"] for entry in entries[2:]), entries
     assert all(isinstance(entry["size_bytes"], int) and entry["size_bytes"] > 0 for entry in entries), entries
     backend.close()
 
@@ -460,7 +478,7 @@ class TestMoonclipFloor:
         assert tuple(int(part) for part in declared.groups()) == MOONCLIP_FLOOR
 
     @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-    @pytest.mark.parametrize("version", ["0.1.2", "0.3.7", "garbage", None])
+    @pytest.mark.parametrize("version", ["0.1.2", "0.3.9", "garbage", None])
     def test_an_old_or_unreadable_moonclip_is_refused_not_replaced(self, tmp_path, monkeypatch, version):
         from ravex._backends import MoonclipTooOld
 
@@ -469,7 +487,7 @@ class TestMoonclipFloor:
             get_backend(make_config(tmp_path, backend="moonclip"))
 
     @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-    @pytest.mark.parametrize("version", ["0.3.8", "0.3.9.dev0", "1.0.0"])
+    @pytest.mark.parametrize("version", ["0.4.0", "0.4.1.dev0", "1.0.0"])
     def test_the_floor_or_later_is_used(self, tmp_path, monkeypatch, version):
         self._claiming(monkeypatch, version)
         backend = get_backend(make_config(tmp_path, backend="moonclip"))
@@ -542,132 +560,29 @@ def test_no_keys_go_to_moonclip(tmp_path, monkeypatch):
     assert not any(name in given for name in ("s3_access_key", "s3_secret_key", "s3_session_token"))
 
 
-# ─── whether a delta at every step is worth it (GPU-418) ────────────
-
-
-def _state_with(weight):
-    state = sample_state()
-    state["models"]["model_a"]["weight"] = weight
-    return state
-
-
-def _save_like_the_runtime(backend, config, steps, weight_at):
-    """Saves where the runtime makes them: at every step while the backend
-    saves every step, and at every `checkpoint_every` once it does not."""
-    for step in range(1, steps + 1):
-        if backend.saves_every_step or step % config.checkpoint_every == 0:
-            backend.save(step, _state_with(weight_at(step)), {"step": str(step)})
-    backend.flush()
-
-
-@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-def test_a_state_that_changes_everywhere_ends_with_fulls_not_deltas(tmp_path, monkeypatch):
-    """AdamW's moments change everywhere at every step, and a delta of such a
-    state weighs what a full does. The run goes on with a full every
-    checkpoint instead of a full's write at every step. The floor under which
-    a full is too small to matter is lowered: a state past it is 64 MiB."""
-    from ravex import _backends
-    from ravex._backends import MoonclipBackend
-
-    monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
-
-    config = make_config(tmp_path, backend="moonclip", checkpoint_every=5, keep_last=2)
-    backend = MoonclipBackend(config)
-    _save_like_the_runtime(
-        backend, config, 20,
-        lambda step: torch.randn(4096, generator=torch.Generator().manual_seed(step)),
-    )
-    kept = backend.known_checkpoints()
-    backend.close()
-
-    assert not backend.saves_every_step
-    assert kept and not any(entry["is_delta"] for entry in kept), kept
-    assert [entry["step"] for entry in kept] == [15, 20]
-
-
-@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-def test_a_state_that_barely_moves_keeps_a_delta_at_every_step(tmp_path, monkeypatch):
-    from ravex import _backends
-    from ravex._backends import MoonclipBackend
-
-    monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
-
-    config = make_config(tmp_path, backend="moonclip", checkpoint_every=5, keep_last=2)
-    backend = MoonclipBackend(config)
-    base = torch.randn(4096, generator=torch.Generator().manual_seed(0))
-
-    def weight_at(step):
-        moved = base.clone()
-        moved[:8] += step
-        return moved
-
-    _save_like_the_runtime(backend, config, 12, weight_at)
-    kept = backend.known_checkpoints()
-    backend.close()
-
-    assert backend.saves_every_step
-    assert any(entry["is_delta"] for entry in kept), kept
-
-
-@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-def test_a_small_state_keeps_a_delta_at_every_step_whatever_its_deltas_weigh(tmp_path):
-    """On a few kilobytes a delta is mostly the snapshot's own framing, and a
-    write at every step costs nothing worth trading resuming from any step for."""
-    from ravex._backends import MoonclipBackend
-
-    config = make_config(tmp_path, backend="moonclip", checkpoint_every=5, keep_last=2)
-    backend = MoonclipBackend(config)
-    _save_like_the_runtime(
-        backend, config, 12,
-        lambda step: torch.randn(4096, generator=torch.Generator().manual_seed(step)),
-    )
-    backend.close()
-
-    assert backend.saves_every_step
-
-
-@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-def test_a_run_whose_deltas_are_not_worth_it_saves_a_full_every_checkpoint(tmp_path, monkeypatch):
-    """The same through `train_loop`: once the deltas are found not worth it,
-    the runtime saves at the checkpoints only, and the store ends with fulls.
-    Every delta is made to count as too heavy, which is what is under test;
-    where the line lies is the backend tests' above."""
-    import ravex
-    from ravex import _backends
-    from ravex._backends import MoonclipBackend
-
-    monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
-    monkeypatch.setattr(_backends, "DELTA_WORTH", 0.0)
-    monkeypatch.chdir(tmp_path)
-
-    @ravex.train_loop(backend="moonclip", checkpoint_every=5, keep_last=2, resume=False)
-    def train():
-        torch.manual_seed(0)
-        model = torch.nn.Linear(16, 16)
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-        while ravex.step() < 20:
-            optimizer.zero_grad()
-            model(torch.randn(4, 16)).pow(2).mean().backward()
-            optimizer.step()
-
-    train()
-    reader = MoonclipBackend(make_config(tmp_path, backend="moonclip", keep_last=2))
-    kept = reader.known_checkpoints()
-    reader.close()
-    assert [(entry["step"], entry["is_delta"]) for entry in kept] == [(15, False), (20, False)]
+# ─── Moonclip chooses the saves between checkpoints (GPU-517) ───────
 
 
 def _train_and_list(tmp_path, monkeypatch, frozen, resume=False):
-    """Twelve steps through `train_loop` with Adam, a full every five, and
-    every checkpoint kept so none is hidden by retention."""
+    """Fifty steps through `train_loop` with Adam and a checkpoint every
+    twenty, each step long enough that a save of this model is cheap beside
+    it. Returns the steps saved, and what the store kept as (step, is_delta)."""
+    import time
+
     import ravex
-    from ravex import _backends
     from ravex._backends import MoonclipBackend
 
-    monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
     monkeypatch.chdir(tmp_path)
+    saved = []
+    real_save = MoonclipBackend.save
 
-    @ravex.train_loop(backend="moonclip", checkpoint_every=5, keep_last=10, resume=resume)
+    def recording(self, step, state, metadata):
+        saved.append(step)
+        return real_save(self, step, state, metadata)
+
+    monkeypatch.setattr(MoonclipBackend, "save", recording)
+
+    @ravex.train_loop(backend="moonclip", checkpoint_every=20, resume=resume)
     def train():
         torch.manual_seed(0)
         body = torch.nn.Linear(64, 64)
@@ -676,159 +591,74 @@ def _train_and_list(tmp_path, monkeypatch, frozen, resume=False):
         for parameter in body.parameters():
             parameter.requires_grad_(not frozen)
         optimizer = torch.optim.Adam([p for p in model.parameters() if p.requires_grad], lr=0.01)
-        while ravex.step() < 12:
+        while ravex.step() < 50:
             optimizer.zero_grad()
             model(torch.randn(4, 64)).pow(2).mean().backward()
             optimizer.step()
+            time.sleep(0.02)
 
     train()
-    reader = MoonclipBackend(make_config(tmp_path, backend="moonclip", keep_last=10))
-    kept = reader.known_checkpoints()
+    monkeypatch.setattr(MoonclipBackend, "save", real_save)
+    reader = MoonclipBackend(make_config(tmp_path, backend="moonclip", checkpoint_every=20))
+    kept = [(entry["step"], entry["is_delta"]) for entry in reader.known_checkpoints()]
     reader.close()
-    return [(entry["step"], entry["is_delta"]) for entry in kept]
+    return saved, kept
 
 
 @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-def test_adam_on_every_parameter_starts_with_fulls_and_writes_nothing_before_the_first_checkpoint(
-    tmp_path, monkeypatch
-):
-    """GPU-516: Adam's moments are two thirds of the state and change at every
-    step, so deltas cannot be light. Weighing them first cost deepseek-1b two
-    9 GB fulls at steps 1 and 4 that stayed in the bucket."""
-    # 12 is the final checkpoint, written as the run ends.
-    assert _train_and_list(tmp_path, monkeypatch, frozen=False) == [(5, False), (10, False), (12, False)]
+def test_nothing_is_saved_before_the_first_checkpoint_and_every_checkpoint_is(tmp_path, monkeypatch):
+    """GPU-516, now Moonclip's: a store starts at one save per checkpoint, so a
+    state whose saves are heavy writes nothing early - deepseek-1b wrote two
+    9 GB fulls at steps 1 and 4. Cheap saves then come down between them."""
+    saved, _ = _train_and_list(tmp_path, monkeypatch, frozen=False)
+    assert saved[0] == 20, saved
+    assert 40 in saved and saved[-1] == 50, saved
+    assert any(step not in (20, 40, 50) for step in saved), "the cadence never came down: %s" % saved
 
 
 @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
 def test_the_same_when_the_run_looked_for_a_checkpoint_to_resume_first(tmp_path, monkeypatch):
     """With `resume` on - the default, and the platform's - the store is open
     before the first step, to look for a checkpoint. On gpu516-001 that left
-    the check above unasked, and deepseek-1b saved at steps 1 to 4 again."""
-    kept = _train_and_list(tmp_path, monkeypatch, frozen=False, resume=True)
-    assert kept == [(5, False), (10, False), (12, False)]
+    Ravex's own check unasked, and deepseek-1b saved at steps 1 to 4 again."""
+    saved, _ = _train_and_list(tmp_path, monkeypatch, frozen=False, resume=True)
+    assert saved[0] == 20, saved
 
 
 @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-def test_adam_on_a_small_head_still_starts_with_deltas(tmp_path, monkeypatch):
-    """A frozen body and a trained head - the shape of a LoRA - may delta well:
-    the optimizer holds a small share, and the backend measures as before."""
-    kept = _train_and_list(tmp_path, monkeypatch, frozen=True)
-    assert any(is_delta for _, is_delta in kept), kept
+def test_adam_on_every_parameter_goes_on_with_fulls_after_one_delta(tmp_path, monkeypatch):
+    """Adam's moments change everywhere at every step, so a delta weighs about
+    a full: once the first one says so the store saves fulls."""
+    _, kept = _train_and_list(tmp_path, monkeypatch, frozen=False)
+    assert sum(is_delta for _, is_delta in kept) <= 1, kept
 
 
 @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
-def test_a_delta_every_five_steps_saves_at_those_steps_and_keeps_the_deltas(tmp_path, monkeypatch):
-    """`delta_every` is a cadence asked for by number: saves at its multiples
-    only, and deltas even where the optimizer would have moved the run to
-    fulls on its own (GPU-516)."""
-    import ravex
-    from ravex import _backends
+def test_adam_on_a_small_head_keeps_its_deltas(tmp_path, monkeypatch):
+    """A frozen body and a trained head - the shape of a LoRA - deltas well:
+    the optimizer holds a small share, and the body does not move."""
+    _, kept = _train_and_list(tmp_path, monkeypatch, frozen=True)
+    assert sum(is_delta for _, is_delta in kept) >= 2, kept
+
+
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_moonclip_is_opened_with_the_window_and_asked_at_every_step(tmp_path):
+    """The window is `checkpoint_every`; a checkpoint the runtime did not ask
+    about - the first, before the backend existed - is still reported to
+    Moonclip, which times its window from it."""
     from ravex._backends import MoonclipBackend
 
-    monkeypatch.setattr(_backends, "FULL_WORTH_WEIGHING", 0)
-    monkeypatch.chdir(tmp_path)
+    backend = MoonclipBackend(make_config(tmp_path, backend="moonclip", checkpoint_every=10))
+    assert backend.saves_every_step and backend.cadence() == 10
+    assert not backend.wants(3)
+    backend.save(10, sample_state(10), {"step": "10"})
+    assert not backend.wants(11), "the window was not opened at step 10"
+    backend.close()
 
-    @ravex.train_loop(backend="moonclip", checkpoint_every=20, delta_every=5, resume=True)
-    def train():
-        torch.manual_seed(0)
-        model = torch.nn.Linear(64, 64)
-        optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-        while ravex.step() < 20:
-            optimizer.zero_grad()
-            model(torch.randn(4, 64)).pow(2).mean().backward()
-            optimizer.step()
-
-    train()
-    reader = MoonclipBackend(make_config(tmp_path, backend="moonclip", checkpoint_every=20, delta_every=5))
-    kept = [(entry["step"], entry["is_delta"]) for entry in reader.known_checkpoints()]
-    reader.close()
-    assert [step for step, _ in kept] == [5, 10, 15, 20], kept
-    assert any(is_delta for _, is_delta in kept), kept
-
-
-def test_delta_every_comes_from_the_environment_and_is_at_least_one(monkeypatch):
-    from ravex._config import RavexConfig
-
-    monkeypatch.setenv("RAVEX_DELTA_EVERY", "5")
-    assert RavexConfig.load().delta_every == 5
-    monkeypatch.setenv("RAVEX_DELTA_EVERY", "0")
-    assert RavexConfig.load().delta_every == 1
-
-
-# ─── whether the link keeps up with a delta at every step (GPU-418) ──
-
-
-class _Manager:
-    """A Moonclip manager as `_check_the_link` sees it: the bucket's newest
-    step, read from a list the test moves."""
-
-    def __init__(self, answers):
-        self.answers = list(answers)
-
-    def remote_step(self):
-        return self.answers.pop(0) if self.answers else None
-
-    def flush(self):
-        pass
-
-
-def _linked_backend(tmp_path, answers, remote=True):
-    from types import SimpleNamespace
-
-    from ravex._backends import MoonclipBackend
-
-    config = make_config(tmp_path, backend="moonclip", checkpoint_every=100, keep_last=2)
-    if remote:
-        config.storage.type = "s3"
-        config.storage.bucket = "runs"
-    backend = MoonclipBackend.__new__(MoonclipBackend)
-    backend._config = config
-    backend._common = {"storage_root": str(tmp_path)}
-    backend._manager = _Manager(answers)
-    opened = []
-    backend._moonclip = SimpleNamespace(MoonclipManager=lambda **kwargs: opened.append(kwargs) or _Manager([]))
-    backend.saves_every_step = True
-    backend._weighed = True
-    backend._behind = 0
-    backend._first_step = 1
-    return backend, opened
-
-
-def test_a_bucket_that_keeps_up_keeps_the_deltas(tmp_path):
-    backend, opened = _linked_backend(tmp_path, [None, 100, 200, 300])
-    for step in (100, 200, 300, 400):
-        backend._check_the_link(step)
-    assert backend.saves_every_step and not opened
-
-
-def test_a_bucket_falling_behind_moves_the_run_to_fulls(tmp_path, caplog):
-    backend, opened = _linked_backend(tmp_path, [None, 100, 100, 100, 100])
-    with caplog.at_level("INFO", logger="ravex"):
-        for step in (100, 200, 300, 400, 500):
-            backend._check_the_link(step)
-            if opened:
-                break
-    assert opened and opened[0]["full_every_steps"] == 1
-    assert not backend.saves_every_step
-    assert step == 500, "it gave up on the link before two checkpoints in a row said so"
-    said = [r for r in caplog.records if "behind the saves" in r.getMessage()]
-    # The run adjusting itself, not a fault: no WARNING for it (GPU-498).
-    assert said and all(r.levelname == "INFO" for r in said)
-    assert "Nothing is wrong" in said[0].getMessage()
-
-
-def test_one_slow_sync_is_not_the_link(tmp_path):
-    backend, opened = _linked_backend(tmp_path, [None, 100, 100, 400, 500])
-    for step in (100, 200, 400, 500, 600):
-        backend._check_the_link(step)
-    assert backend.saves_every_step and not opened
-
-
-def test_a_store_on_the_disk_alone_is_never_judged_by_a_link(tmp_path):
-    backend, opened = _linked_backend(tmp_path, [None] * 5, remote=False)
-    for step in (100, 1000, 5000):
-        backend._check_the_link(step)
-    assert backend.saves_every_step and not opened
+    full = MoonclipBackend(make_config(tmp_path / "full", backend="moonclip", checkpoint_every=10, delta=False))
+    assert full.cadence() is None
+    assert [step for step in range(1, 31) if full.wants(step)] == [10, 20, 30]
+    full.close()
 
 
 # ─── the checkpoints offered are the bucket's (GPU-422) ─────────────

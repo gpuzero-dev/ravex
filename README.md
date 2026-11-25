@@ -157,13 +157,15 @@ one run without touching the code.
 
 **How often it saves.** With `torch_save`, a checkpoint every
 `checkpoint_every` steps, and `keep_last` of them are kept. With Moonclip, the
-default, Ravex saves a small delta against the last full snapshot at *every*
-step, so a crash costs at most one step; `checkpoint_every` is then how often
-the store is synced to a bucket and the window it keeps (the last that many
-steps and the full they stand on), and `keep_last` is not used. A run of 147
-steps holds about a hundred snapshots: that is the design, not a leak.
-`delta: false` goes back to one full save every `checkpoint_every`
-([docs](docs/configuration.md#a-delta-at-every-step)).
+default, a checkpoint every `checkpoint_every` steps and, between two, as
+many saves as Moonclip finds room for: it times what saving costs - the copy,
+the write, the upload - and saves more often while it is cheap, down to a
+delta at every step, so a crash costs as few steps as the machine allows.
+`checkpoint_every` is also how often the store is synced to a bucket and the
+window it keeps (the last that many steps and the full they stand on), and
+`keep_last` is the most a window holds, in fulls' worth of bytes. `delta: false` goes back to one full save every
+`checkpoint_every`
+([docs](docs/configuration.md#saves-between-checkpoints)).
 
 **Precision.** `save_dtype` (Moonclip only) stores parts of the checkpoint at
 a lower precision to make it smaller. It is lossy: a run resumed from a
@@ -171,9 +173,9 @@ a lower precision to make it smaller. It is lossy: a run resumed from a
 stopped. Leave it unset when a resume must be exact
 ([docs](docs/configuration.md#precision-per-component)).
 
-**Storage.** Ravex decides when to save and what, and puts it back into the
-live objects; Moonclip decides how the bytes are written and where, bucket
-included. So `storage` says where the bucket is, and the credentials are never
+**Storage.** Ravex decides when a checkpoint is due and what goes in it, and
+puts it back into the live objects; Moonclip decides how the bytes are written
+and where, bucket included, and how often to save between two checkpoints. So `storage` says where the bucket is, and the credentials are never
 read by Ravex or from the config file: Moonclip reads them from
 `MOONCLIP_S3_ACCESS_KEY` / `MOONCLIP_S3_SECRET_KEY`, the usual `AWS_*` pair, a
 profile in `~/.aws/credentials`, or the machine's IAM role

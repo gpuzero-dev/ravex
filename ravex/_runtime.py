@@ -827,13 +827,7 @@ class RavexRuntime:
             if self.registry.step_count % self.config.emergency_check_every == 0:
                 self._check_emergency_signal()
 
-        if (
-            self.registry.step_count % self.config.checkpoint_every == 0
-            or (
-                self._saves_every_step()
-                and self.registry.step_count % self.config.delta_every == 0
-            )
-        ):
+        if self._save_due(self.registry.step_count):
             # Not here: this is the middle of the iteration, before the LR
             # scheduler has stepped. Flag it and collect at the top of the next
             # one — see _BatchBoundaryIterator.
@@ -882,87 +876,27 @@ class RavexRuntime:
         raise Preempted("SIGTERM at step %d" % self.registry.step_count)
 
     def _saves_every_step(self) -> bool:
-        """Whether a save is due at every step rather than every checkpoint.
-
-        The backend's answer once there is one. Before the first save there is
-        not, and it is the configured backend's: Moonclip with deltas on. If
-        Moonclip then turns out to be unavailable, the fallback answers no from
-        the next step on.
-        """
+        """Whether Moonclip chooses the saves between two checkpoints
+        (GPU-517): the backend's answer once it is open, and before that the
+        configured one's, Moonclip with deltas on. If Moonclip then turns out
+        to be unavailable, the fallback answers no from then on."""
         if self._backend is not None:
-            every = bool(getattr(self._backend, "saves_every_step", False))
-            # Open already when a run looks for a checkpoint to resume from,
-            # which is before its first step: the deltas are not weighed yet.
-            if every and not getattr(self._backend, "_weighed", True):
-                why = self._optimizer_outweighs_deltas()
-                if why:
-                    self._backend.start_with_fulls(self.registry.step_count, why)
-                    return False
-            return every
-        if not (self.config.backend == "moonclip" and self.config.delta):
-            return False
-        if self.config.delta_every > 1:
-            # Asked for by number: deltas at that cadence, weighed or not.
-            return True
-        why = self._optimizer_outweighs_deltas()
-        if why:
-            logger.info(
-                "%s Nothing is wrong: this run saves a full every %d steps and keeps "
-                "%d, and a resume starts from the last of them rather than from any step.",
-                why, self.config.checkpoint_every, self.config.keep_last,
-            )
-            self.config.delta = False
-            return False
-        return True
+            return bool(getattr(self._backend, "saves_every_step", False))
+        return self.config.backend == "moonclip" and self.config.delta
 
-    def _optimizer_outweighs_deltas(self) -> Optional[str]:
-        """Whether the optimizer's state alone makes a delta weigh a full,
-        known before anything is written (GPU-516).
+    def _save_due(self, step: int) -> bool:
+        """Whether to save at the end of ``step``.
 
-        Adam's moments change at every step for every trainable parameter,
-        and Moonclip stores a changed tensor whole, so a delta weighs at least
-        the optimizer's state. When that is already the share of a full past
-        which deltas are not worth it (`DELTA_WORTH`), the deltas the backend
-        would write to weigh them (GPU-418) are fulls in all but name: on
-        deepseek-1b two of them, 9 GB each, stayed in the bucket and a stop
-        waited for them to go up. The run starts with a full every
-        `checkpoint_every` instead. A state that may still delta well - a
-        LoRA, whose optimizer holds the adapters only - is left to the
-        backend's measurement, as before.
-
-        Asked at the end of a step, once the optimizer has its state: before
-        its first step it has none, and the answer is "not yet". The reason
-        when it does, for the log; None when deltas may still be worth it.
+        In a window Moonclip's choice (GPU-517), asked at every step: how
+        often to save between checkpoints is what saving costs, and Moonclip
+        is what measures that - the copy, the write, the upload. Otherwise
+        every ``checkpoint_every`` steps. Before the backend is open only a
+        checkpoint, whose save opens it; Moonclip takes nothing else in its
+        first window either.
         """
-        import torch
-
-        from ravex._backends import DELTA_WORTH, FULL_WORTH_WEIGHING
-        from ravex._dist.collectives import unwrap_model
-
-        def size(tensor: Any) -> int:
-            return tensor.numel() * tensor.element_size() if isinstance(tensor, torch.Tensor) else 0
-
-        moments = sum(
-            size(value)
-            for _, optimizer in self.registry.keyed_optimizers()
-            for state in optimizer.state.values()
-            for value in state.values()
-            if isinstance(value, torch.Tensor) and value.dim() > 0
-        )
-        if not moments:
-            return None
-        weights = sum(
-            size(value)
-            for _, model in self.registry.keyed_models()
-            for value in unwrap_model(model).state_dict().values()
-        )
-        total = moments + weights
-        if total < FULL_WORTH_WEIGHING or moments / total < DELTA_WORTH:
-            return None
-        return (
-            "The optimizer's state is %.0f%% of a checkpoint and changes at every "
-            "step, so a delta would weigh about a full." % (100 * moments / total)
-        )
+        if self._backend is not None and self._saves_every_step():
+            return self._backend.wants(step)
+        return step % self.config.checkpoint_every == 0
 
     def _is_checkpoint_step(self, step: int) -> bool:
         """Whether ``step`` is a checkpoint, and not one of the deltas between."""
@@ -4211,14 +4145,14 @@ class RavexRuntime:
         stopped for the whole of it. Over loopback it is milliseconds and says
         nothing; over a 100 Mbps link it was 81% of the handoff.
 
-        ``backpressure`` does not count while a delta is saved at every step:
-        it is the writer waiting on the link to the bucket, which the backend
-        watches itself and answers by going on with fulls (GPU-418). Counted,
-        a quickstart on Scaleway writing to R2 warned of "77% of wall time",
-        46 ms of its 53 ms being that wait, just before the backend fixed it,
-        and the run then stepped in 9 ms (GPU-498). With fulls every
-        ``checkpoint_every`` it counts again: a writer slower than the cadence
-        is then the cadence's cost.
+        ``backpressure`` does not count while Moonclip chooses the saves
+        between checkpoints: it is the writer waiting on the disk or the link,
+        which Moonclip times itself and answers by saving less often
+        (GPU-517). Counted, a quickstart on Scaleway writing to R2 warned of
+        "77% of wall time", 46 ms of its 53 ms being that wait, just before
+        the store fixed it, and the run then stepped in 9 ms (GPU-498). With
+        fulls every ``checkpoint_every`` it counts again: a writer slower than
+        the cadence is then the cadence's cost.
         """
         previous = self._last_checkpoint_end
         self._last_checkpoint_end = finished
@@ -4244,11 +4178,12 @@ class RavexRuntime:
         self._cadence_warned = True
         if self._saves_every_step():
             # `checkpoint_every` is not the lever here: it moves the syncs, and
-            # the cost is the delta taken at every step.
+            # the cost is the copy of the state, which Moonclip already counts
+            # in choosing how often to save.
             logger.warning(
-                "The delta saved at every step is costing %.0f%% of wall time: "
-                "%s of handoff per %s step, at step %d. The run will "
-                "still complete. What a delta costs the loop is the copy of the "
+                "The saves between checkpoints are costing %.0f%% of wall time: "
+                "%s of handoff per %s between saves, at step %d. The run will "
+                "still complete. What a save costs the loop is the copy of the "
                 "state; save_dtype for the optimizer state halves it, and "
                 "delta: false goes back to a full save every checkpoint_every.",
                 100 * cost / interval,

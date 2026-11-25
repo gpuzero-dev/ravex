@@ -39,10 +39,11 @@ SEED = 0
 #: resumed run replays 17-20 (identically) before reaching new ground.
 RESUME_FROM = 17
 
-#: The same crash on Moonclip, which saves a delta at every step: the last one
-#: collected is step 19's, at the top of iteration 20, so the resumed run
-#: replays step 20 alone.
-RESUME_FROM_A_DELTA_PER_STEP = CRASH_AT
+#: The same crash on Moonclip, which saves between checkpoints as often as
+#: saving costs it room to (GPU-517): at best a save at every step, the last
+#: collected step 19's at the top of iteration 20, and the resumed run replays
+#: step 20 alone; at worst the checkpoints only, as above.
+RESUME_FROM_A_SAVE_PER_STEP = CRASH_AT
 
 
 class Killed(RuntimeError):
@@ -144,7 +145,10 @@ def test_resume_reproduces_the_uninterrupted_run_on_moonclip(tmp_path, monkeypat
         tmp_path, monkeypatch, "moonclip"
     )
 
-    assert sorted(second_half) == list(range(RESUME_FROM_A_DELTA_PER_STEP, TOTAL_STEPS + 1))
+    # Where in between is how fast this machine saved; bit for bit either way.
+    first = min(second_half)
+    assert RESUME_FROM <= first <= RESUME_FROM_A_SAVE_PER_STEP
+    assert sorted(second_half) == list(range(first, TOTAL_STEPS + 1))
 
     for step, loss in second_half.items():
         assert loss == reference[step], f"loss at step {step} differs after resume"

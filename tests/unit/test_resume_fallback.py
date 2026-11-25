@@ -70,8 +70,8 @@ def test_a_corrupt_newest_pack_resumes_from_the_one_before(tmp_path, monkeypatch
     ravex.deactivate()
 
     snapshots = _snapshots(store)
-    newest_step, newest_id, newest_is_delta = snapshots[-1]
-    assert newest_is_delta, "the test means to break one delta, not the window's base"
+    # A delta or a full, as Moonclip chose (GPU-517): either way the newest.
+    newest_step, newest_id, _ = snapshots[-1]
     _corrupt(store, newest_id)
 
     # ── the same script again ───────────────────────────────────────

@@ -242,8 +242,10 @@ _PREFIX = "ravex"
 #: sync from a rented node to R2, while the metrics and the next sync waited
 #: (GPU-422). 0.3.8 is the first whose save and load hold one copy of the
 #: state: with an older one rank 0 of an outer loop ran out of memory at
-#: the start (GPU-443).
-MOONCLIP_FLOOR = (0, 3, 8)
+#: the start (GPU-443). 0.4.0 is the first that chooses the saves between
+#: two checkpoints itself, from what they cost (`window_steps`, `wants`):
+#: Ravex no longer weighs deltas or watches the link (GPU-517).
+MOONCLIP_FLOOR = (0, 4, 0)
 
 
 class RemoteNeedsMoonclip(RuntimeError):
@@ -307,39 +309,6 @@ def check_moonclip_version(moonclip=None) -> None:
         "torch.save instead."
         % (floor, "version %s" % getattr(moonclip, "__version__", "an unknown version"), floor)
     )
-
-
-#: How many deltas are weighed against the full they stand on before the run
-#: decides whether deltas are worth it (GPU-418). Two, so one delta that
-#: happened to land on a quiet step does not decide for the whole run.
-DELTAS_TO_WEIGH = 2
-
-#: A delta is worth writing at every step while it weighs less than this share
-#: of a full. The window keeps `checkpoint_every` of them on disk and sends
-#: them all to the bucket, so even at a half the window is many fulls' worth;
-#: past it the run pays a full's write at every step for the right to resume
-#: from any step. Known cases sit far from the line on both sides: with Adam the
-#: moments change everywhere and Moonclip stores such tensors whole
-#: (`delta_max_ratio`), so a delta of deepseek-1b weighs about a full (GPU-213);
-#: a model whose state barely moves writes deltas a small fraction of one.
-DELTA_WORTH = 0.5
-
-#: Below this a full is too small for its write at every step to cost
-#: anything worth giving up resuming from any step for, and the ratio is not
-#: worth reading: on a few kilobytes the snapshot's own framing is most of a
-#: delta. A model of a few million parameters is past it.
-FULL_WORTH_WEIGHING = 64 * 2**20
-
-#: How many windows behind the saves the bucket may be before the link counts
-#: as too slow for a delta at every step (GPU-418). A periodic sync starts
-#: every `checkpoint_every` saves and puts the newest point up first, so on a
-#: link that keeps up the bucket trails by about a window; past two the syncs
-#: are falling further behind, not catching up.
-WINDOWS_BEHIND = 2
-
-#: How many checkpoints in a row the bucket has to be that far behind: one is
-#: a sync that ran long once, two is the link.
-CHECKS_BEHIND = 2
 
 
 class MoonclipBackend(CheckpointBackend):
@@ -406,17 +375,8 @@ class MoonclipBackend(CheckpointBackend):
         self._config = config
         self._common = kwargs
         self.saves_every_step = False
-        #: Whether the deltas have been weighed against the full they stand on
-        #: (GPU-418): once, early in the run, and then never again.
-        # `delta_every` above 1 is a cadence asked for by number, kept
-        # whatever the deltas weigh; only the link still moves it (GPU-516).
-        self._weighed = not config.delta or config.delta_every > 1
-        #: Checkpoints in a row at which the bucket was more than
-        #: WINDOWS_BEHIND windows behind the saves (GPU-418).
-        self._behind = 0
-        #: The first step this process saved, for the lag before the first
-        #: sync has put anything up.
-        self._first_step: Optional[int] = None
+        #: The last step Moonclip was asked about; see `wants`.
+        self._asked: Optional[int] = None
         # `MoonclipManager`, not `CheckpointManager`. The latter is Moonclip's
         # convenience layer: it reads RANK/WORLD_SIZE from the environment when
         # it is not told, and under torchrun that made it refuse the
@@ -442,9 +402,7 @@ class MoonclipBackend(CheckpointBackend):
 
     def _mode_kwargs(self, full: bool) -> Dict[str, Any]:
         """The manager's settings for one way of saving: a full every
-        checkpoint, or a delta at every step in a window (GPU-209). Apart
-        from the rest of the settings so that a run can be moved from the
-        second to the first (GPU-418) with everything else as it was."""
+        checkpoint, or the window Moonclip chooses the saves of (GPU-517)."""
         config = self._config
         storage = config.storage
         kwargs = dict(self._common)
@@ -458,33 +416,30 @@ class MoonclipBackend(CheckpointBackend):
             # without a word. Lifted to say the same as `max_total_snapshots`.
             kwargs["max_full_snapshots"] = config.keep_last
         else:
-            # A delta at every step, a full every `full_every`. Moonclip's
-            # own cap on deltas between fulls (10 by default) is lifted to
-            # match, or it would force a full every ten steps.
-            self.saves_every_step = True
-            # A sliding window of `checkpoint_every` steps (GPU-209): the
-            # last that many deltas and the full they are taken against, the
-            # oldest going as each new one arrives - from the bucket too,
-            # where Moonclip mirrors its deletes. `keep_last` does not apply: counted in
-            # saves it would be the last few steps. Retention goes by age and
-            # never removes a full a kept delta needs, so across a new full
-            # the window holds both for as long as it reaches back past it.
+            # A window of `checkpoint_every` steps, whose saves Moonclip
+            # chooses (GPU-517): every step is offered (`wants`), a checkpoint
+            # is always taken, and between two Moonclip saves as often as what
+            # a save costs it - the writer and the upload - leaves room for,
+            # deltas while they pay and fulls once they weigh as much. It
+            # keeps the window by age, whatever the count, with the full its
+            # deltas need, and mirrors what it drops to the bucket.
             #
             # Not the merger: it deletes the deltas just written, which the
             # sync may not have sent yet, and a pack gone between the sync's
             # listing and its read aborts the whole sync (seen 2026-10-08,
             # 20 of 50). What the window drops is the oldest, already sent.
-            # Counted in saves: with a delta every `delta_every` steps a
-            # window of `checkpoint_every` steps holds that many fewer.
-            every = config.delta_every
-            window = max(config.checkpoint_every // every, 1) + 1
+            self.saves_every_step = True
             kwargs.update(
+                window_steps=config.checkpoint_every,
                 full_every_steps=config.effective_full_every,
-                max_deltas_per_full=max(config.effective_full_every // every, 1),
-                max_total_snapshots=window,
-                # Fulls are never the binding cap: dropping the oldest one
-                # takes its deltas with it, and would cut the window short.
-                max_full_snapshots=window,
+                # Moonclip's own cap of ten deltas between fulls is lifted, or
+                # it would force a full every ten saves.
+                max_deltas_per_full=config.effective_full_every,
+                # The most a window may hold, in fulls' worth of bytes: a
+                # state saved in fulls otherwise came down to a full at every
+                # step on a fast disk and link, a window of them on the node
+                # and in the bucket.
+                max_full_snapshots=config.keep_last,
             )
 
         if storage.is_remote:
@@ -496,21 +451,16 @@ class MoonclipBackend(CheckpointBackend):
                 s3_prefix=storage.prefix,
                 s3_endpoint=storage.endpoint,
                 s3_path_style=storage.path_style,
-                # To the bucket every `checkpoint_every` steps. With a save
-                # per step that is this many saves; with a save per
-                # checkpoint it is every one of them. Moonclip's default is a
-                # hundred saves, which at one save every few hundred steps
-                # means at close and never before: on 2026-10-08 a node the
-                # provider took back had written checkpoints to step 1500 and
-                # the bucket held none of them, so the resume found nothing
-                # and started over. A sync sends only what the bucket lacks -
-                # the files are immutable, the manifest goes last - so each
-                # one costs the new snapshot or delta and no more.
-                sync_every_n_saves=(
-                    max(config.checkpoint_every // config.delta_every, 1)
-                    if self.saves_every_step
-                    else 1
-                ),
+                # To the bucket at every checkpoint. With a window Moonclip
+                # syncs at each one itself; without, a save is a checkpoint.
+                # Moonclip's default is a hundred saves, which at one save
+                # every few hundred steps means at close and never before: on
+                # 2026-10-08 a node the provider took back had written
+                # checkpoints to step 1500 and the bucket held none of them,
+                # so the resume found nothing and started over. A sync sends
+                # only what the bucket lacks - the files are immutable, the
+                # manifest goes last - so each one costs the new snapshots.
+                sync_every_n_saves=1,
             )
         return kwargs
 
@@ -527,12 +477,11 @@ class MoonclipBackend(CheckpointBackend):
         # contract this class documents. It just happens one line later, inside
         # `save_raw`. That matters because for a model already on CPU the dict
         # below aliases live parameter memory rather than owning a copy of it.
-        if self._first_step is None:
-            self._first_step = step
-        if not self._weighed:
-            self._weigh_deltas(step)
-        if self.saves_every_step and step % self._config.checkpoint_every == 0:
-            self._check_the_link(step)
+        if self.saves_every_step and self._asked != step:
+            # A save the runtime did not ask Moonclip about - the first
+            # checkpoint, before this backend existed, or the last one - still
+            # tells the cadence where its window is.
+            self.wants(step)
         started = time.perf_counter()
         tensors, _ = self._moonclip.flatten_state_dict(state, _PREFIX, as_tensors=True)
         flattened = time.perf_counter()
@@ -578,112 +527,19 @@ class MoonclipBackend(CheckpointBackend):
             phases["fingerprint"] = fingerprinted
         return phases
 
-    def _weigh_deltas(self, step: int) -> None:
-        """Whether a delta at every step is worth what it costs, asked once,
-        on the first deltas the run writes (GPU-418).
+    def wants(self, step: int) -> bool:
+        """Whether to save ``step``: Moonclip's choice in a window (GPU-517),
+        a checkpoint otherwise. Asked for every step, checkpoints included,
+        which is what lets Moonclip time its window."""
+        if not self.saves_every_step:
+            return step % self._config.checkpoint_every == 0
+        self._asked = step
+        return bool(self._manager.wants(step))
 
-        A delta at every step is what lets a run resume from any step. It is
-        worth that while a delta is light. When the state changes everywhere
-        at every step - AdamW's moments do - Moonclip stores each tensor whole
-        and a "delta" weighs what a full does: on deepseek-1b, 11 GB a step,
-        which no rented node's disk holds for a window and which the training
-        loop waits on. Then the run goes on with a full every
-        `checkpoint_every` steps, `keep_last` of them, as with `delta: false`,
-        and says so once. What it gives up is resuming from any step: from
-        here a resume starts from the last full.
-
-        Asked before this step's save, and only until it is answered: listing
-        the snapshots waits for the writer, which the save just after would
-        wait for anyway.
-        """
-        try:
-            snapshots = self._manager.list_snapshots()
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Could not weigh the deltas: %s", exc)
-            return
-        fulls = [s for s in snapshots if not s.get("is_delta") and s.get("total_compressed")]
-        deltas = [
-            int(s["total_compressed"])
-            for s in snapshots
-            if s.get("is_delta") and s.get("total_compressed") is not None
-        ]
-        if not fulls or len(deltas) < DELTAS_TO_WEIGH:
-            return
-        self._weighed = True
-        full = int(fulls[-1]["total_compressed"])
-        delta = sum(deltas[-DELTAS_TO_WEIGH:]) / DELTAS_TO_WEIGH
-        share = delta / full
-        if full < FULL_WORTH_WEIGHING or share < DELTA_WORTH:
-            logger.info(
-                "A delta weighs %.0f%% of a full: a delta at every step, as configured.",
-                100 * share,
-            )
-            return
-        self._go_full(
-            step,
-            "A delta weighs %.0f%% of a full (%.1f MiB against %.1f MiB), so a "
-            "delta at every step costs a full's write at every step."
-            % (100 * share, delta / 2**20, full / 2**20),
-        )
-
-    def _check_the_link(self, step: int) -> None:
-        """Whether the bucket keeps up with a delta at every step, asked at
-        each checkpoint while the run writes them (GPU-418).
-
-        A delta can be light and still too much for the link: on 2026-11-14 a
-        node wrote 19 MB a step at fourteen steps a second, far under the
-        size `_weigh_deltas` looks at and far over what R2 took from it, and
-        its bucket fell further behind at every sync. Moonclip says which
-        step the bucket last had whole; a bucket more than WINDOWS_BEHIND
-        windows behind at CHECKS_BEHIND checkpoints in a row is a link slower
-        than the saves, and the run goes on with fulls, which move a window's
-        worth of state once a window instead of once a step.
-        """
-        remote_step = getattr(self._manager, "remote_step", None)
-        if remote_step is None or not self._config.storage.is_remote:
-            return
-        try:
-            there = remote_step()
-        except Exception as exc:  # pragma: no cover - defensive
-            logger.debug("Could not ask the bucket's newest step: %s", exc)
-            return
-        since = there if there is not None else (self._first_step or 0)
-        window = self._config.checkpoint_every
-        self._behind = self._behind + 1 if step - since > WINDOWS_BEHIND * window else 0
-        if self._behind < CHECKS_BEHIND:
-            return
-        self._go_full(
-            step,
-            "The bucket is %d steps behind the saves (its newest checkpoint is "
-            "%s), so the link does not keep up with a delta at every step."
-            % (step - since, "step %d" % there if there is not None else "none yet"),
-        )
-
-    def start_with_fulls(self, step: int, why: str) -> None:
-        """Go on with fulls before the deltas are weighed, because the runtime
-        already knows they would weigh a full (GPU-516): the optimizer's state
-        alone is past `DELTA_WORTH`, and the deltas written to weigh it would
-        be fulls in all but name."""
-        if not self._weighed:
-            self._go_full(step, why)
-
-    def _go_full(self, step: int, why: str) -> None:
-        """Go on with a full every `checkpoint_every` steps, `keep_last` of
-        them, as with `delta: false`, saying `why` once (GPU-418).
-
-        An INFO, not a WARNING: it is the run adjusting itself the way it
-        should, and nothing is wrong. Said as a warning, on a quickstart on
-        Scaleway writing to R2, it read as a fault to someone trying GPU Zero
-        for the first time (GPU-498)."""
-        logger.info(
-            "%s Nothing is wrong: from step %d this run saves a full every %d "
-            "steps and keeps %d, which the link keeps up with, and a resume "
-            "starts from the last of them rather than from any step.",
-            why, step, self._config.checkpoint_every, self._config.keep_last,
-        )
-        self._weighed = True
-        self._manager.flush()
-        self._manager = self._moonclip.MoonclipManager(**self._mode_kwargs(full=True))
+    def cadence(self) -> Optional[int]:
+        """Steps between two saves inside a window as Moonclip last chose;
+        None without a window."""
+        return self._manager.cadence() if self.saves_every_step else None
 
     def _fingerprint_previous(self) -> Tuple[float, float]:
         """Fingerprint the last step saved while it is still in the store.

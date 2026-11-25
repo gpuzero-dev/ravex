@@ -187,11 +187,13 @@ class TestSending:
 
     @pytest.mark.skipif(importlib.util.find_spec("moonclip") is None, reason="moonclip not installed")
     def test_the_list_reaches_the_backend_before_the_first_checkpoint_step(self, storage, backend, monkeypatch):
-        # GPU-504: a delta at every step and `checkpoint_every` far ahead. The
-        # list used to go only at a `checkpoint_every` step or at the end, so
-        # a run stopped before it - a machine given back - left checkpoints
-        # in its store the backend never heard of. Now it arrives while the
-        # run trains, well before either.
+        # GPU-504: a save before `checkpoint_every`, which is far ahead - here
+        # a forced one; on a GPU, Moonclip's between two checkpoints, or a
+        # full whose write ends minutes after its step. The list used to go
+        # only at a `checkpoint_every` step or at the end, so a run stopped
+        # before it - a machine given back - left checkpoints in its store
+        # the backend never heard of. Now it arrives while the run trains,
+        # well before either.
         from ravex._runtime import RavexRuntime
 
         monkeypatch.setattr(RavexRuntime, "LIST_EVERY_SECONDS", 0.2)
@@ -206,6 +208,7 @@ class TestSending:
         )
         def train():
             tiny(5)
+            assert ravex.checkpoint()
             run_id = ravex.runs.describe(str(storage))["run_id"]
             deadline = time.time() + 10
             while time.time() < deadline and not backend.checkpoints.get(run_id):

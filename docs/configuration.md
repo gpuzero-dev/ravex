@@ -21,21 +21,20 @@ ravex status
 | Key | Env var | Default | What it does |
 |---|---|---|---|
 | `enabled` | `RAVEX_ENABLED` | `true` | Master switch. `RAVEX_ENABLED=0` disables Ravex for one run. |
-| `checkpoint_every` | `RAVEX_CHECKPOINT_EVERY` | `100` | Optimizer steps between checkpoints. Not micro-batches: with gradient accumulation, one accumulation cycle is one step. With Moonclip and `delta` on, a delta is saved at every step and this is how often the store goes to the bucket, and the window the store keeps: the last this many steps and the full they stand on. See [A delta at every step](#a-delta-at-every-step). |
+| `checkpoint_every` | `RAVEX_CHECKPOINT_EVERY` | `100` | Optimizer steps between checkpoints. Not micro-batches: with gradient accumulation, one accumulation cycle is one step. With Moonclip and `delta` on, Moonclip saves between checkpoints as often as saving costs it room to, and this is how often the store goes to the bucket, and the window the store keeps: the last this many steps and the full they stand on. See [Saves between checkpoints](#saves-between-checkpoints). |
 | `full_every` | `RAVEX_FULL_EVERY` | `0` | Moonclip with `delta` on: steps between full snapshots. Every delta is taken against the last full. `0` means `checkpoint_every`, a full once a window. |
 | `checkpoint_on_exit` | `RAVEX_CHECKPOINT_ON_EXIT` | `true` | Take a final checkpoint when the process exits normally or on SIGTERM. |
 | `resume_step` | `RAVEX_RESUME_STEP` | `null` | Come back at this step instead of the newest. A step the store does not hold stops the run and lists the ones it has; see [The run as a document](#the-run-as-a-document). |
 | `resume` | `RAVEX_RESUME` | `true` | Look for an existing checkpoint at startup. Set false to always start clean. |
 | `max_steps` | `RAVEX_MAX_STEPS` | `null` | Hard stop, in optimizer steps. See [Step budgets](#step-budgets). |
 | `backend` | `RAVEX_BACKEND` | `moonclip` | `moonclip` or `torch_save`. Falls back to `torch_save` if Moonclip is missing. |
-| `delta` | `RAVEX_DELTA` | `true` | Moonclip only: a delta against the last full at every step. Off, a full every `checkpoint_every`. |
-| `delta_every` | `RAVEX_DELTA_EVERY` | `1` | Moonclip with `delta` on: steps between two deltas. Above 1 the cadence is kept whatever the deltas weigh; only a bucket that falls behind moves the run to fulls. See [A delta at every step](#a-delta-at-every-step). |
+| `delta` | `RAVEX_DELTA` | `true` | Moonclip only: Moonclip saves between checkpoints as often as saving costs it room to, deltas while they pay. Off, a full every `checkpoint_every`. See [Saves between checkpoints](#saves-between-checkpoints). |
 | `keep_base_in_memory` | `RAVEX_KEEP_BASE_IN_MEMORY` | `true` | Moonclip only: keep the last full snapshot's bytes resident so the next delta does not have to read them back. Costs a copy of the saved state. See [The write path](#the-write-path). |
 | `async_save` | `RAVEX_ASYNC_SAVE` | `true` | Moonclip only: write in the background. Off, the loop stops until the checkpoint is durable. Diagnostic; see [The write path](#the-write-path). |
 | `compression` | `RAVEX_COMPRESSION` | `zstd` | `zstd` or `none`. |
 | `save_dtype` | `RAVEX_SAVE_DTYPE` | `null` | Moonclip only: what precision each part of the checkpoint is stored at. A dtype for everything, or a mapping of component to dtype. See [Precision per component](#precision-per-component). |
 | `compression_level` | `RAVEX_COMPRESSION_LEVEL` | `3` | zstd level. |
-| `keep_last` | `RAVEX_KEEP_LAST` | `5` | Checkpoints to retain. Older ones are deleted. Not used with a delta per step, where `checkpoint_every` is the window. |
+| `keep_last` | `RAVEX_KEEP_LAST` | `5` | Checkpoints to retain. Older ones are deleted. With Moonclip and `delta` on, where `checkpoint_every` is the window, the most a window may hold instead, in fulls' worth of bytes. |
 | `sharded_checkpoints` | `RAVEX_SHARDED_CHECKPOINTS` | `gather` | How FSDP state is written: `gather` or `per_rank`. See [Sharded models](#sharded-models). |
 | `reshard_on_resume` | `RAVEX_RESHARD_ON_RESUME` | `false` | Resume a `per_rank` checkpoint at a different world size, rebuilding each shard from the old ones. See [Resuming onto a different number of ranks](#resuming-onto-a-different-number-of-ranks). |
 | `convert_foreign` | `RAVEX_CONVERT_FOREIGN` | `false` | Resume from a checkpoint another framework wrote — DeepSpeed ZeRO, or a torch distributed checkpoint (which is what Megatron-core writes). See [Resuming from another framework's checkpoint](#resuming-from-another-frameworks-checkpoint). |
@@ -359,23 +358,48 @@ What you give up is what any resharded resume gives up — the data order and th
 per-rank RNG, both described above. What you do not give up is the model, the
 optimizer moments, or the step count.
 
-### A delta at every step
+### Saves between checkpoints
 
 With Moonclip and `delta` on - the default - a save goes through three
 places, each on its own thread:
 
-1. **Memory.** At every step the state is copied, and the training loop goes on.
-   That copy is the whole of what a save costs the loop.
+1. **Memory.** The state is copied, and the training loop goes on. That copy is
+   the whole of what a save costs the loop.
 2. **Disk.** Moonclip's writer takes the delta against the last full,
    compresses it and writes it to the local store, in the background. One save
    is in flight at a time; the next waits for it, and measured on a 1.5B model
    that wait was 4-12% of the save, the rest being the copy.
-3. **The bucket.** Every `checkpoint_every` steps Moonclip's sync sends what
-   the bucket does not hold yet, the manifest last.
+3. **The bucket.** At every checkpoint Moonclip's sync sends what the bucket
+   does not hold yet, the manifest last.
 
-A full is written every `full_every` steps - by default once a window, every
-`checkpoint_every` - and every delta is taken against the last one: loading
-any step reads two snapshots, never a chain.
+**How often is Moonclip's to choose** (GPU-517). Ravex offers it every step,
+and it takes every checkpoint - each `checkpoint_every` steps - and between two
+as many steps as what a save costs leaves room for. At each checkpoint the
+window that just closed says how much of its wall clock went into saving - the
+copy and the writer, or the upload if that was longer - and the gap between two
+saves moves so that this is half the window: down when saving was cheap, to a
+save at every step, up when it was not, to one per checkpoint. After the first
+measurement it moves at most twice as far in one window. A run starts at one
+save per checkpoint and nothing before the first, so a state whose saves
+are heavy writes nothing it would not have written with `delta: false`.
+
+**No more than `keep_last` fulls a window.** However cheap saving is, a window
+holds at most `keep_last` fulls' worth of bytes, judged from the size of the
+last window's saves. Without it, a state saved in fulls came down to a full at
+every step on a fast disk and link, a window of them on the node and in the
+bucket - on deepseek-1b, about 190 GB. A state whose deltas are light is not
+held back by it.
+
+**Deltas while they pay.** The first delta written is weighed against its
+full. Under half of it, deltas go on, and the next save is a full whose bytes
+stay in memory as the base of those after it (see `keep_base_in_memory`); until
+then no base is held. Half or more - Adam's moments change everywhere at every
+step, and on deepseek-1b with AdamW a delta weighs about a full - and the store
+goes on with fulls, which cost the same and need no base.
+
+A full is written at least every `full_every` steps - by default once a window,
+every `checkpoint_every` - and every delta is taken against the last one:
+loading any step reads two snapshots, never a chain.
 
 Once a window is what keeps a broken full from costing the run (GPU-241).
 Every delta in the window is read through its full, and the window keeps only
@@ -388,57 +412,11 @@ Adam, fp32, CPU): fulls more often make the deltas smaller, so the bytes per
 step go *down* (108-115 MiB against 123 with one full), and the host time per
 step goes up by 5-8%.
 
-The store keeps a **window** of the last `checkpoint_every` steps, each one a
-step to resume or fork from, and the full they stand on; the bucket mirrors it.
-On a 500-step run with `checkpoint_every: 10` the bucket ends with the full at
-step 1 and the deltas from 491 to 500. A step that slid out of the window is
-gone: to keep points further back, set `delta: false`, which writes a full every
-`checkpoint_every` and keeps `keep_last` of them.
-
-Two things follow. A machine lost between two syncs costs up to
-`checkpoint_every` steps, and at most that. And with Adam the optimizer moments
-barely delta, so a delta is close to the size of a full: the window is that many
-of them on disk, and a sync sends that many. `save_dtype: {optimizer: bf16}`
-halves the part that is most of it.
-
-**When a delta weighs a full, the run saves fulls instead** (GPU-418). Ravex
-weighs the first two deltas a run writes against the full they stand on. When
-the full is 64 MiB or more and a delta weighs half of it or more, a delta at
-every step is a full's write at every step - 11 GB a step on deepseek-1b with
-AdamW - for the right to resume from any step, and the run goes on as with
-`delta: false`: a full every `checkpoint_every` steps, `keep_last` of them. It
-says so once, in a warning with both sizes. A resume from then on starts from
-the last full, and weighs its first deltas again. Below 64 MiB a full is
-small enough that its write at every step costs nothing worth that trade.
-
-**When the optimizer already outweighs, it starts with fulls** (GPU-516). The
-deltas it would weigh are fulls in all but name, and on deepseek-1b two of
-them, 9 GB each at steps 1 and 4, stayed in the bucket and made a stop wait
-for them. So at the end of the first step, before anything is written, Ravex
-compares the optimizer's state with the whole checkpoint: Adam's moments
-change at every step, so a delta weighs at least them. When they are half of
-it or more (Adam on every parameter is two thirds), the run starts with a full
-every `checkpoint_every` steps and writes nothing before the first. A state
-the optimizer is a small part of - a LoRA, whose optimizer holds the adapters
-only - still starts with deltas and is weighed as above.
-
-**A delta every few steps** (`delta_every`). A delta taken further from its
-full weighs more: with AdamW on 25M parameters, 76% of a full after one step,
-85% after five, 91% after twenty. Fewer deltas still write less in all - over
-a window of 100 steps about 17 fulls' worth at a delta every 5 steps against
-76 at every step - for a resume every 5 steps instead of every one. With
-`delta_every` above 1 the cadence is what the run was asked for, so Ravex no
-longer weighs the deltas to move to fulls; a bucket that falls behind still
-does.
-
-**When the link does not keep up, the run saves fulls too.** A delta can be
-light and still more than the link to the bucket takes: 19 MB a step at
-fourteen steps a second is 270 MB/s, and R2 from a rented node takes a few
-tens. Moonclip says which step the bucket last had whole; at every checkpoint
-Ravex compares it with the step being saved, and a bucket more than two
-windows behind at two checkpoints in a row moves the run to fulls, with a
-warning that says how far behind it was. A full every `checkpoint_every`
-steps moves the state once a window instead of once a step.
+The store keeps a **window** of the last `checkpoint_every` steps, by age, with
+the full they stand on; the bucket mirrors it. A step that slid out of the
+window is gone: to keep points further back, set `delta: false`, which writes a
+full every `checkpoint_every` and keeps `keep_last` of them. A machine lost
+between two syncs costs up to `checkpoint_every` steps, and at most that.
 
 ### The write path
 

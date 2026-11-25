@@ -18,8 +18,9 @@ class _Collect(logging.Handler):
 def _runtime(every=2, delta=False):
     """A runtime plus the records it warns with.
 
-    ``delta`` off by default: with it on, Moonclip saves at every step and the
-    observation is about that delta rather than about ``checkpoint_every``.
+    ``delta`` off by default: with it on, Moonclip chooses the saves between
+    checkpoints and the observation is about those rather than about
+    ``checkpoint_every``.
 
     The handler goes on *after* construction on purpose: `_setup_logging`
     clears the ravex logger's handlers and turns off propagation, so anything
@@ -60,18 +61,18 @@ def test_an_expensive_cadence_is_reported_once():
     assert "2.6 s of handoff per 6.0 s" in message
 
 
-def test_with_a_delta_per_step_the_warning_names_the_delta():
-    """`checkpoint_every` is not the lever when a delta is saved at every
-    step: it moves the syncs, and the cost is the save taken in between."""
+def test_with_saves_between_checkpoints_the_warning_names_them():
+    """`checkpoint_every` is not the lever when Moonclip saves between
+    checkpoints: it moves the syncs, and the cost is the saves in between."""
     runtime, warnings = _runtime(every=100, delta=True)
     _handoff(runtime, 0, 0.0, 1.0, {"collect": 0.2, "store": 0.3})
     _handoff(runtime, 52, 1.0, 2.0, {"collect": 0.2, "store": 0.3})
 
     assert len(warnings) == 1
     message = warnings[0].getMessage()
-    assert "every step" in message
+    assert "saves between checkpoints" in message
     assert "50%" in message
-    assert "500 ms of handoff per 1.0 s step" in message
+    assert "500 ms of handoff per 1.0 s between saves" in message
     assert "checkpoint_every=" not in message
 
 

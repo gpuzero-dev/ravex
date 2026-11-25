@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.16.0 — unreleased
+
+### Changed
+
+- **Moonclip chooses the saves between two checkpoints (GPU-517).** With
+  `delta` on, Ravex offers Moonclip every step and saves the ones it takes:
+  every checkpoint, and between two as often as what a save costs - the
+  copy, the write, the upload, timed by Moonclip over each window - leaves
+  room for, down to a save at every step. A run starts at one save per
+  checkpoint, so nothing is written before the first: on deepseek-1b with
+  AdamW that is what 0.15.1 did by a rule, now by measurement. Deltas while
+  the first one weighs under half its full, fulls after that. The window of
+  `checkpoint_every` steps is kept by age, and holds at most `keep_last`
+  fulls' worth of bytes however cheap saving is. Ravex no longer weighs deltas,
+  watches the bucket fall behind, or compares the optimizer with the
+  checkpoint: those three rules (GPU-418, GPU-516) are gone, replaced by
+  Moonclip's measurement. Needs Moonclip 0.4.0.
+
 ## 0.15.1 — 2026-11-24
 
 ### Fixed

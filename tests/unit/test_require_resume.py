@@ -113,22 +113,23 @@ class TestCheckpointsReachTheBucketAsTheyAreWritten:
         backend = _backends.MoonclipBackend(config)
         return seen, backend
 
-    def test_with_a_delta_per_step_the_bucket_gets_one_every_checkpoint(
+    def test_with_deltas_moonclip_keeps_the_window_and_chooses_its_saves(
         self, tmp_path, monkeypatch
     ):
         seen, backend = self.manager_arguments(
             tmp_path, monkeypatch, checkpoint_every=50, full_every=400
         )
         assert backend.saves_every_step
-        assert seen.get("sync_every_n_saves") == 50, (
-            "a save per step: the sync every checkpoint_every is that many saves"
+        assert seen.get("window_steps") == 50, (
+            "the window Moonclip keeps by age, syncs at the end of, and "
+            "chooses the saves inside (GPU-517)"
         )
         assert seen.get("full_every_steps") == 400
         assert seen.get("max_deltas_per_full") == 400, (
-            "Moonclip's default of ten would force a full every ten steps"
+            "Moonclip's default of ten would force a full every ten saves"
         )
-        assert seen.get("max_total_snapshots") == 51, (
-            "the window: the last checkpoint_every deltas and their full"
+        assert seen.get("max_full_snapshots") == 5, (
+            "keep_last is the most a window may hold, in fulls' worth of bytes"
         )
         assert not seen.get("merge_stride"), (
             "the merger deletes deltas the sync may not have sent yet"

@@ -295,16 +295,10 @@ class RavexConfig:
     backend: str = "moonclip"
     storage: StorageConfig = field(default_factory=StorageConfig)
 
+    #: With Moonclip, let it save between checkpoints as often as saving
+    #: costs it room to, deltas while they pay and fulls once they weigh as
+    #: much (GPU-517). Off, a full every `checkpoint_every` steps.
     delta: bool = True
-
-    #: With `delta` on, the steps between two deltas: 1, the default, is a
-    #: delta at every step. A larger number writes fewer of them, each further
-    #: from the full it is taken against and so heavier: measured with AdamW,
-    #: 76% of a full after one step, 85% after five, 91% after twenty
-    #: (GPU-516). It is a choice the run is held to: with it above 1 Ravex no
-    #: longer weighs the deltas to move to fulls on its own (GPU-418), and
-    #: only a bucket that falls behind still does.
-    delta_every: int = 1
     compression: str = "zstd"
     compression_level: int = 3
     keep_last: int = 5
@@ -953,8 +947,6 @@ class RavexConfig:
             self.backend = value
         if (value := get("DELTA")) is not None:
             self.delta = _as_bool(value, self.delta)
-        if (value := get("DELTA_EVERY")) is not None:
-            self.delta_every = _as_int(value, self.delta_every)
         if (value := get("COMPRESSION")) is not None:
             self.compression = value
         if (value := get("COMPRESSION_LEVEL")) is not None:
@@ -1123,7 +1115,6 @@ class RavexConfig:
         numeric = (
             "checkpoint_every",
             "full_every",
-            "delta_every",
             "keep_last",
             "compression_level",
             "replicate_every",
@@ -1278,8 +1269,6 @@ class RavexConfig:
             self.checkpoint_every = 1
         if self.full_every < 0:
             self.full_every = 0
-        if self.delta_every < 1:
-            self.delta_every = 1
         if self.keep_last < 1:
             self.keep_last = 1
         if self.replicate_every < 0:
