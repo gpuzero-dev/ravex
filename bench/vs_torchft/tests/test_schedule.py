@@ -136,3 +136,25 @@ def test_a_second_attempt_at_a_phase_gets_folders_of_its_own_on_the_hosts(tmp_pa
     assert node.events == "runs/phase-a/arm/node0/events.jsonl"
     assert second.arms[0].nodes[0].events == "runs/phase-a-2/arm/node0/events.jsonl"
     assert first.environment(first.arms[0], node)["RAVEX_STORAGE_PATH"] == "/w/runs/phase-a/arm/node0/store"
+
+
+def test_a_remote_start_backgrounds_the_command_alone(monkeypatch):
+    """GPU-213: `a && b && c & echo $!` put the whole list in the background,
+    a subshell that kept ssh's output open, so ssh never returned and the pid
+    was the subshell's. Only the command goes in the background."""
+    import subprocess
+
+    host = hostlib.Host(name="pod0", address="10.0.0.1", workdir="/tmp/bench-start-test", ssh="root@x")
+    sent = []
+    monkeypatch.setattr(host, "_ssh", lambda script: sent.append(script) or "4242\n")
+    process = host.start(["python", "train.py"], {"A": "1"}, "runs/node0/stdout.log")
+    assert process.pid == 4242
+    (script,) = sent
+    assert script.startswith("mkdir -p ") and "&& { env A=1 setsid nohup python train.py" in script
+    assert script.endswith("& echo $!; }")
+    if sys.platform == "linux":
+        # The shell agrees: the list returns at once, holding nothing open,
+        # and prints the command's pid.
+        done = subprocess.run(["bash", "-c", script.replace("python train.py", "sleep 5")],
+                              capture_output=True, timeout=3)
+        assert done.stdout.strip().isdigit(), done

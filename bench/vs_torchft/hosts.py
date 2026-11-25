@@ -79,7 +79,12 @@ class Host:
             out.close()
             return Process(self, popen.pid, log, popen)
         assignments = " ".join("%s=%s" % (k, shlex.quote(v)) for k, v in env.items())
-        script = "mkdir -p %s && cd %s && %s setsid nohup %s >> %s 2>&1 < /dev/null & echo $!" % (
+        # The braces put in the background the command alone. Without them
+        # `a && b && c & echo $!` backgrounds the whole list as a subshell,
+        # which holds ssh's output open - ssh never returned - and whose pid
+        # `$!` gives instead of the command's (found on the first rented run,
+        # GPU-213; the CPU tests' hosts are local and never take this path).
+        script = "mkdir -p %s && cd %s && { %s setsid nohup %s >> %s 2>&1 < /dev/null & echo $!; }" % (
             shlex.quote(os.path.dirname(log)), shlex.quote(self.workdir), ("env " + assignments) if assignments else "",
             shlex.join(command), shlex.quote(log),
         )

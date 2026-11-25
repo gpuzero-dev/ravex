@@ -40,7 +40,8 @@
       "port": 29510,
       "env": {
         "TORCHFT_TIMEOUT_SEC": "900",
-        "TORCHFT_QUORUM_TIMEOUT_SEC": "1800"
+        "TORCHFT_QUORUM_TIMEOUT_SEC": "1800",
+        "GLOO_SOCKET_IFNAME": "podnet1"
       }
     },
     {
@@ -65,7 +66,8 @@
       "checkpoint_every": 100,
       "env": {
         "TORCHFT_TIMEOUT_SEC": "900",
-        "TORCHFT_QUORUM_TIMEOUT_SEC": "1800"
+        "TORCHFT_QUORUM_TIMEOUT_SEC": "1800",
+        "GLOO_SOCKET_IFNAME": "podnet1"
       }
     }
   ],
