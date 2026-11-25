@@ -727,3 +727,83 @@ def test_a_start_that_ends_the_job_says_why_at_once_and_saves_nothing(monkeypatc
         record.levelname == "ERROR" and "could not start" in record.getMessage()
         for record in caplog.records
     )
+
+
+# ─── the same starting state needs no transfer (GPU-213) ─────────────────
+
+
+def test_the_starting_state_s_digest_is_the_payload_s_bits():
+    """Equal loops hash equal; a seed, a momentum or a round apart do not.
+    A momentum never allocated hashes as the zeros the payload would ship."""
+    import torch
+
+    from ravex._dist.membership import state_digest
+
+    a = OuterLoop(tiny_model(seed=0), inner_steps=4)
+    b = OuterLoop(tiny_model(seed=0), inner_steps=4)
+    assert state_digest(a) == state_digest(b)
+    assert state_digest(a) != state_digest(OuterLoop(tiny_model(seed=1), inner_steps=4))
+    b.optimizer.buffers = {name: torch.zeros_like(value) for name, value in b.outer.items()}
+    assert state_digest(a) == state_digest(b), "absent and zero momentum are the same state"
+    name = next(iter(b.outer))
+    b.optimizer.buffers[name] = b.optimizer.buffers[name] + 1
+    assert state_digest(a) != state_digest(b)
+    c = OuterLoop(tiny_model(seed=0), inner_steps=4)
+    c.round_number = 3
+    assert state_digest(a) != state_digest(c)
+
+
+def _store_with(key, value):
+    class Store:
+        def __init__(self):
+            self.values = {key: value}
+
+        def check(self, keys):
+            return all(k in self.values for k in keys)
+
+        def get(self, k):
+            return self.values[k]
+
+        def set(self, k, v):
+            self.values[k] = v
+
+    return Store()
+
+
+def test_a_node_holding_the_source_s_state_downloads_nothing(monkeypatch):
+    import time
+
+    from ravex._dist import membership
+    from ravex._dist.exchange import _job_digest
+
+    source = OuterLoop(tiny_model(seed=0), inner_steps=4)
+    mine = OuterLoop(tiny_model(seed=0), inner_steps=4)
+    exchange = _SilentExchange(answers=True)
+    exchange.scope = b"job"
+    exchange.store = _store_with(
+        membership.SEED_DIGEST_KEY % (_job_digest(b"job"), 0), membership.state_digest(source).encode("utf-8")
+    )
+    asked = []
+    exchange.fetch_state = lambda *args, **kwargs: asked.append(args)
+    assert membership.adopt_run_state(mine, exchange, 0, 1, time.monotonic() + 5) is True
+    assert asked == [], "it downloaded a state it already held"
+    assert mine.steps_this_round == 0
+
+
+def test_a_node_whose_state_differs_still_downloads_it(monkeypatch):
+    import time
+
+    from ravex._dist import membership
+    from ravex._dist.exchange import _job_digest
+
+    monkeypatch.setattr(membership, "SOURCE_SILENCE", 0.3)
+    source = OuterLoop(tiny_model(seed=0), inner_steps=4)
+    mine = OuterLoop(tiny_model(seed=1), inner_steps=4)
+    exchange = _SilentExchange(answers=False)
+    exchange.scope = b"job"
+    exchange.store = _store_with(
+        membership.SEED_DIGEST_KEY % (_job_digest(b"job"), 0), membership.state_digest(source).encode("utf-8")
+    )
+    with pytest.raises(membership.PeerSilent):
+        # The source never serves: a node that asks for the state finds out.
+        membership.adopt_run_state(mine, exchange, 0, 1, time.monotonic() + 60)

@@ -1174,6 +1174,64 @@ SOURCE_SILENCE = 120.0
 #: Seconds between two asks for the run's starting state (GPU-213).
 SEED_POLL = 0.05
 
+#: Where the source of a run's starting state writes a digest of it, before
+#: the state itself: the job's digest, then the source's rank (GPU-213).
+SEED_DIGEST_KEY = "ravex/gpu213/seed-digest/%s/%d"
+
+#: How long a node waits for the source's digest before downloading the state
+#: anyway. The source writes it the moment it is decided, before anything
+#: else; a source that has not by now is slow or gone, and the transfer's own
+#: wait (:data:`SOURCE_SILENCE`) is the one that tells the two apart.
+DIGEST_PATIENCE = 10.0
+
+
+def state_digest(loop) -> str:
+    """A SHA-256 of what :func:`seed_payload` would hold, without building it
+    (GPU-213): every entry's name, dtype, shape and bytes, in name order.
+
+    Two nodes whose digests are equal hold the same starting state bit for
+    bit, so the one that is not the source has nothing to download. Bytes, not
+    values: a ``-0.0`` and a ``0.0`` are different states here, as they would
+    be on the wire. A momentum not allocated yet is hashed as the zeros the
+    payload would ship, a slice at a time, so a node that has never stepped
+    does not allocate a buffer the size of its model to be hashed (GPU-443).
+    """
+    import hashlib
+
+    import torch
+
+    def entries():
+        buffers = getattr(loop.optimizer, "buffers", {}) or {}
+        for name, value in loop.outer.items():
+            yield OUTER_PREFIX + name, value
+            buffer = buffers.get(name)
+            yield MOMENTUM_PREFIX + name, buffer if buffer is not None else (value.dtype, tuple(value.shape))
+        yield MODEL_STEPS_KEY, torch.tensor(int(getattr(loop, "model_steps", 0)), dtype=torch.int64)
+        yield INNER_STEPS_KEY, torch.tensor(
+            [int(getattr(loop, "inner_steps", None) or 0), int(getattr(loop, "pending_inner_steps", None) or 0)],
+            dtype=torch.int64,
+        )
+        yield ROUND_KEY, torch.tensor(int(getattr(loop, "round_number", 0)), dtype=torch.int64)
+
+    digest = hashlib.sha256()
+    for name, value in sorted(entries(), key=lambda entry: entry[0]):
+        digest.update(name.encode("utf-8"))
+        if isinstance(value, tuple):
+            dtype, shape = value
+            digest.update(str(dtype).encode("utf-8"))
+            digest.update(repr(shape).encode("utf-8"))
+            left = torch.empty(shape, dtype=dtype, device="meta").numel() * torch.empty((), dtype=dtype).element_size()
+            zeros = bytes(1 << 20)
+            while left:
+                digest.update(zeros[: min(left, len(zeros))])
+                left -= min(left, len(zeros))
+            continue
+        value = torch.as_tensor(value).detach().contiguous()
+        digest.update(str(value.dtype).encode("utf-8"))
+        digest.update(repr(tuple(value.shape)).encode("utf-8"))
+        digest.update(value.cpu().reshape(-1).view(torch.uint8).numpy().tobytes())
+    return digest.hexdigest()
+
 
 class PeerSilent(RuntimeError):
     """A peer this node cannot do without stopped answering (GPU-443).
@@ -1221,13 +1279,52 @@ def adopt_run_state(loop, exchange, source: int, rank: int, deadline: float) -> 
     and the run goes on from the round's start on all of them. Returns
     whether this node holds the shared state.
     """
-    from ravex._dist.exchange import SEED_ROUND
+    from ravex._dist.exchange import SEED_ROUND, _job_digest
 
+    store = getattr(exchange, "store", None)
+    scope = getattr(exchange, "scope_base", None) or getattr(exchange, "scope", None)
+    digest_key = SEED_DIGEST_KEY % (_job_digest(scope), int(source))
     if rank == source:
         payload = seed_payload(loop)
+        # The digest first: it is all a node holding the same state needs,
+        # and it is on the store long before the state is served.
+        try:
+            if store is not None:
+                store.set(digest_key, state_digest(loop).encode("utf-8"))
+        except Exception as exc:
+            logger.debug("Could not write the starting state's digest (%s); the others download it.", exc)
         exchange.publish_state(payload, SEED_ROUND)
         apply_state(loop, payload)
         loop.steps_this_round = 0
+        return True
+    # **The same state needs no transfer (GPU-213).** A run that starts fresh
+    # has every node build its model from the same seed, so each usually holds
+    # the source's state already, and downloading it cost the first round a
+    # whole transfer: 40 s of 0.5 GB on the benchmark's link, a node training
+    # while the other waited. torchft skips its own with ``init_sync=False``
+    # by assuming the seeds agree; here it is checked, bit for bit, and any
+    # difference - another seed, a resume, a model built otherwise - takes the
+    # transfer below as before.
+    theirs = None
+    if store is not None:
+        until = min(deadline, time.monotonic() + DIGEST_PATIENCE)
+        while time.monotonic() < until:
+            try:
+                if store.check([digest_key]):
+                    theirs = store.get(digest_key).decode("utf-8")
+                    break
+            except Exception:
+                break
+            time.sleep(SEED_POLL)
+    if theirs is not None and theirs == state_digest(loop):
+        # What the source does with its own: the outer parameters into the
+        # model, and the round from its start.
+        loop.write_back()
+        loop.steps_this_round = 0
+        logger.info(
+            "This node already holds node %d's starting state (the same digest): "
+            "nothing to download.", source,
+        )
         return True
     # Asked again until it is there: a state is served without waiting - a
     # joiner reads off the store which round to ask for - and the source may

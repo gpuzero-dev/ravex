@@ -15,6 +15,16 @@
   members still passing that boundary to acknowledge it, rather than asking
   for a later round. In the benchmark against torchft, on rounds of about
   3 s, a joiner now takes 12 s to contribute, from 15; torchft's takes 7.
+- **A node that already holds the run's starting state does not download
+  it (GPU-213).** At the start of a run every node but the source fetched the
+  outer parameters and momentum from the source, even when it had built the
+  same model from the same seed: 40 s for 0.5 GB on a RunPod private network,
+  the source training meanwhile and then waiting as long at the end of the
+  first round. The source now writes a SHA-256 of its state before the state,
+  and a node whose own state has the same digest - parameters, momentum, step
+  counts and round, bit for bit - starts at once. Any difference downloads as
+  before. torchft skips its transfer with `init_sync=False` by assuming the
+  seeds agree; this checks.
 - **A node takes the run's starting state as soon as it is written
   (GPU-213).** It asked for it every 0.2 s, and the source writes it within
   moments of every node agreeing on it, so a start lost about that long on
