@@ -42,6 +42,31 @@
         "TORCHFT_TIMEOUT_SEC": "900",
         "TORCHFT_QUORUM_TIMEOUT_SEC": "1800"
       }
+    },
+    {
+      "name": "ravex-lean",
+      "kind": "ravex",
+      "nodes": [
+        "pod0",
+        "pod1"
+      ],
+      "port": 29402,
+      "ravex_config": "configs/ravex_lean.yaml",
+      "rounds_root": "/dev/shm"
+    },
+    {
+      "name": "torchft-ckpt",
+      "kind": "torchft",
+      "nodes": [
+        "pod0",
+        "pod1"
+      ],
+      "port": 29511,
+      "checkpoint_every": 100,
+      "env": {
+        "TORCHFT_TIMEOUT_SEC": "900",
+        "TORCHFT_QUORUM_TIMEOUT_SEC": "1800"
+      }
     }
   ],
   "faults": []

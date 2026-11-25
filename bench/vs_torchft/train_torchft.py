@@ -69,6 +69,14 @@ def main() -> None:
     parser.add_argument("--timeout", type=float, default=900.0, help="seconds for a collective, a commit or a heal")
     parser.add_argument("--quorum-timeout", type=float, default=1800.0)
     parser.add_argument("--connect-timeout", type=float, default=120.0)
+    # torchft keeps nothing on disk: a replica heals from a live peer's
+    # memory. These give the arm what Ravex's has, a checkpoint every so many
+    # steps that outlives every node at once (GPU-213), so the cost of that
+    # durability can be compared at equal guarantees.
+    parser.add_argument("--checkpoint-every", type=int, default=0,
+                        help="local steps between two DCP checkpoints of the model and the optimizer; 0, none")
+    parser.add_argument("--checkpoint-dir", default="", help="where the DCP checkpoints go")
+    parser.add_argument("--keep-last", type=int, default=2, help="DCP checkpoints kept")
     args = parser.parse_args()
     if not args.lighthouse:
         raise SystemExit("--lighthouse or TORCHFT_LIGHTHOUSE must name the lighthouse")
@@ -136,9 +144,26 @@ def main() -> None:
 
     original = setup.inner_step
 
+    saved: List[str] = []
+
+    def checkpoint(step: int) -> None:
+        """A synchronous DCP save of the model and the optimizer, inside the step
+        it follows, so its seconds count against the arm as Ravex's do."""
+        import shutil
+
+        import torch.distributed.checkpoint as dcp
+
+        path = os.path.join(args.checkpoint_dir, "step-%08d" % step)
+        dcp.save({"model": model.state_dict(), "optim": optimizer.state_dict()}, checkpoint_id=path)
+        saved.append(path)
+        while len(saved) > max(1, args.keep_last):
+            shutil.rmtree(saved.pop(0), ignore_errors=True)
+
     def inner_step(model, optimizer, schedule, step):
         stats = original(model, optimizer, schedule, step)
         state["seen"] = step + 1
+        if args.checkpoint_every and (step + 1) % args.checkpoint_every == 0:
+            checkpoint(step + 1)
         return stats
 
     setup.inner_step = inner_step  # type: ignore[method-assign]

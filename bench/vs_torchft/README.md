@@ -37,6 +37,24 @@ reaches the model:
   way - stop every node, wait for a replacement, start everything again from
   the last checkpoint.
 
+Two more rows put the systems at equal guarantees (GPU-213), since one keeps
+its training on disk and the other does not:
+
+- `ravex-lean`: the Ravex arm with no checkpoint inside the run and its
+  rounds' reports on a tmpfs (`configs/ravex_lean.yaml`, and the arm's
+  `rounds_root`): the outer loop alone, as torchft's is. Mind the tmpfs's
+  size, a round per node of the model in fp32: Docker's `/dev/shm` is 64 MB.
+- `torchft-ckpt`: the torchft arm with a synchronous DCP checkpoint of the
+  model and the optimizer every `checkpoint_every` steps (the arm's
+  setting), the last two kept: what Ravex's primary arm has, a run that
+  survives every node going at once.
+
+**The clock starts at the end of each arm's first step** (`make_table.py`).
+torchft connects its `Manager` before the arm's `start` event, while Ravex
+builds its outer loop - the rendezvous, the starting state - inside the first
+optimizer step; counted from `start`, the table charged Ravex's coordination
+and none of torchft's. Both arms are given their first step.
+
 **Where the comparison is not like for like**, said here because a reader
 will ask:
 
@@ -44,8 +62,10 @@ will ask:
   here is a plain module, so torchft runs through its lower-level API.
 - torchft's lighthouse is a single point of failure; Ravex's rendezvous fails
   over. The node killed in a fault is never the coordinator's host.
-- Ravex can checkpoint a delta at every step, and its tokens/s include that
-  when it is on; torchft writes nothing persistent.
+- Ravex's primary arm checkpoints, and Moonclip chooses saves between two
+  checkpoints, all inside its tokens/s; torchft writes nothing persistent.
+  The `ravex-lean` and `torchft-ckpt` rows above compare them without and
+  with that.
 - The two arms split the data by the same rule but not in the same order:
   Ravex seeds its order from the job, the bench's sampler from `--seed`.
 - On one machine, as in the CPU tests, Ravex's nodes have no place
@@ -223,6 +243,11 @@ per pod for boot, setup and the upload.
 | copy-off of the logs and destroy | 2 min | | | |
 | **total, two pods** | **37-43 min** | **1.2-1.4** | **$1.10-1.28** | **$0.42-0.49** |
 | ceiling: setup given up at 15 min, each run stopped by `--timeout 1800`, 5 min to destroy | 80 min | 2.7 | $2.37 | $0.91 |
+
+The `ravex-lean` and `torchft-ckpt` rows (GPU-213) run on the same two pods
+with `--only ravex-lean` and `--only torchft-ckpt`, after the two above: about
+25-30 minutes more per pod, $0.75-0.90 on Secure, which still fits the budget
+without the retry. Run them only once the first two have passed their checks.
 
 a1 on vast.ai is 20-30 minutes at about $0.25/h, about $0.10 of the vast.ai
 balance. The phase fits under $3.50 at its timeouts' ceiling on Secure 4090s

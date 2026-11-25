@@ -50,7 +50,8 @@ def test_each_round_counts_once_and_tokens_accumulate():
 def test_a_summary_has_every_column_worked_out():
     s = make_table.summarize("a", two_nodes_three_rounds(), [], price=3.6, overhead_minutes=0, billed=None)
     assert s["committed_tokens"] == 60_000
-    assert s["tokens_per_s"] == 60_000 / 30
+    # From the end of the first step, at t=1, to the last round at t=30.
+    assert s["tokens_per_s"] == 60_000 / 29
     assert s["wasted_steps"] == 0
     # Two node lives of 30 s each, at $3.6 an hour: $0.06 for 0.06M tokens.
     assert abs(s["node_seconds"] - 60) < 1e-9

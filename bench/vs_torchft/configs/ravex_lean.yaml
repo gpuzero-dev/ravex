@@ -1,0 +1,17 @@
+# The Ravex arm with the outer loop alone (GPU-213): what Ravex costs next to
+# torchft at equal guarantees, where torchft keeps nothing on disk.
+#
+# No checkpoint inside the run - `checkpoint_every` is past any phase's
+# length, and only the final one is written, after the last round and so
+# outside the table's clock - and the rounds' reports on a tmpfs, which the
+# phase names with the arm's `rounds_root`. Everything else is the primary
+# arm's (`ravex_primary.yaml`), so the difference between the two rows is
+# what durability costs Ravex.
+backend: moonclip
+delta: false
+checkpoint_every: 1000000
+outer_save_dtype: null
+outer_overlap: false
+outer_combine: mean
+outer_deadline: 1200
+metrics_every: 10

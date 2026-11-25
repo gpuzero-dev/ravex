@@ -229,6 +229,10 @@ class Controller:
                    "--events", node.host.path(node.events)] + arguments
         if arm.kind == "torchft":
             command += ["--advertise", node.host.address]
+            # The arm with a DCP checkpoint (GPU-213): torchft's own keeps none.
+            if arm.spec.get("checkpoint_every"):
+                command += ["--checkpoint-every", str(int(arm.spec["checkpoint_every"])),
+                            "--checkpoint-dir", node.host.path(node.file("dcp"))]
         return command
 
     def environment(self, arm: Arm, node: Node) -> Dict[str, str]:
@@ -264,6 +268,13 @@ class Controller:
         if all(regions) and len(regions) > 1:
             env["RAVEX_OUTER_REGION"] = node.host.region
         env["RAVEX_STORAGE_PATH"] = node.host.path(node.file("store"))
+        # The rounds' reports somewhere that is not a disk, for the arm that
+        # measures the outer loop alone (GPU-213): torchft's round is an
+        # allreduce in memory. A tmpfs; mind its size, since a round is the
+        # model's size in fp32 per node and Docker's /dev/shm is 64 MB.
+        if arm.spec.get("rounds_root"):
+            env["RAVEX_OUTER_ROOT"] = "%s/%s-%d/node%d" % (
+                str(arm.spec["rounds_root"]).rstrip("/"), arm.name, arm.epoch, node.number)
         env["RAVEX_LOG_FILE"] = node.host.path(node.file("ravex.log"))
         config = arm.spec.get("ravex_config", "configs/ckpt_restart.yaml" if arm.kind == "ckpt_restart"
                               else "configs/ravex_primary.yaml")

@@ -191,7 +191,13 @@ def summarize(arm: str, events: List[Dict[str, Any]], controller: List[Dict[str,
     losses = evals(events)
     steps = [e for e in events if e["event"] == "step"]
     total_tokens = committed[-1]["tokens"] if committed else 0
-    t0 = min(e["t"] for e in starts)
+    # The clock starts at the end of the arm's first step, not at ``start``
+    # (GPU-213). torchft connects its Manager before ``start``; Ravex builds
+    # its outer loop - rendezvous, the starting state - inside the first
+    # optimizer step. From ``start`` the table charged Ravex's coordination
+    # and nothing of torchft's. Both arms are given their first step.
+    first_steps = [e["t"] for e in steps if e.get("step") == 1]
+    t0 = min(first_steps) if first_steps else min(e["t"] for e in starts)
     t_end = committed[-1]["t"] if committed else max(e["t"] for e in events)
     committed_steps = total_tokens // tokens_per_step
     faults = [c for c in controller if c.get("event") == "fault" and c.get("arm") == arm]

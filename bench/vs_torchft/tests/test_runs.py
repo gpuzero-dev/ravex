@@ -131,6 +131,33 @@ def test_phase_a_in_small_two_nodes_per_system_three_rounds_each(tmp_path):
             (n, r, 2) for n in (0, 1) for r in (1, 2, 3)], rounds
 
 
+def test_each_system_with_and_without_a_checkpoint(tmp_path):
+    """GPU-213: the two rows that put the systems at equal guarantees.
+
+    Ravex without a checkpoint and with its rounds on a tmpfs is the outer
+    loop alone, as torchft's is; torchft with a DCP checkpoint every 10 steps
+    has what Ravex's primary arm has. Each closes its rounds, and each writes
+    - or does not write - what its row says."""
+    lean = {"name": "ravex-lean", "kind": "ravex", "nodes": ["here4", "here5"], "port": 29402,
+            "ravex_config": "configs/ravex_lean.yaml", "rounds_root": str(tmp_path / "shm")}
+    saving = {**TORCHFT, "name": "torchft-ckpt", "nodes": ["here6", "here7"], "port": 29511,
+              "min_replicas": 2, "checkpoint_every": 10}
+    done, results = run_phase(tmp_path, [RAVEX, {**TORCHFT, "min_replicas": 2}, lean, saving])
+    assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:] + logs(results)
+    for arm in ("ravex", "torchft", "ravex-lean", "torchft-ckpt"):
+        rounds = [e for e in events(results, arm) if e["event"] == "round"]
+        assert sorted((e["node"], e["round"], e["nodes"]) for e in rounds) == [
+            (n, r, 2) for n in (0, 1) for r in (1, 2, 3)], (arm, rounds, logs(results))
+    work = tmp_path / "work"
+    for node in (0, 1):
+        dcp = sorted(p.name for p in work.rglob("torchft-ckpt/node%d/dcp/step-*" % node))
+        # Every 10 steps of 30, the last two kept.
+        assert dcp == ["step-00000020", "step-00000030"], dcp
+        assert any((tmp_path / "shm").rglob("ravex-lean-*/node%d/*" % node)), "the lean arm's rounds were not on the tmpfs"
+    verdict = table(results, 3)
+    assert "| ravex-lean |" in verdict.stdout and "| torchft-ckpt |" in verdict.stdout
+
+
 def test_a_join_then_a_kill_on_both_systems(tmp_path):
     # The join well before the kill, as the plan orders them: a Ravex joiner
     # is admitted one or two rounds after it asks (GPU-213), and one that is
