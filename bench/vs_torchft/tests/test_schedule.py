@@ -57,7 +57,7 @@ def test_option_reads_the_last_value_given():
 
 def phase(kind="ravex", hosts=("a", "b")):
     return {
-        "bench": "/b", "deepseek": "/d", "data": "/data", "train_args": ["--steps", "300"],
+        "bench": "/b", "data": "/data", "train_args": ["--steps", "300"],
         "arms": [{"name": "arm", "kind": kind, "nodes": list(hosts), "port": 29400}],
         "faults": [{"arm": "arm", "action": "join", "host": "c", "at_step": 100}],
     }
@@ -69,7 +69,7 @@ def make(tmp_path, kind="ravex", addresses=("10.0.0.1", "10.0.0.2", "10.0.0.3"),
     return controller.Controller(phase(kind), machines, str(tmp_path))
 
 
-def test_ravex_nodes_get_a_failover_list_their_place_and_a_shard_for_the_joiner(tmp_path):
+def test_ravex_nodes_get_a_failover_list_their_place_and_how_many_start(tmp_path):
     c = make(tmp_path)
     arm = c.arms[0]
     env = c.environment(arm, arm.nodes[1])
@@ -80,8 +80,8 @@ def test_ravex_nodes_get_a_failover_list_their_place_and_a_shard_for_the_joiner(
     assert env["RAVEX_CONFIG"] == "/b/configs/ravex_primary.yaml"
     assert "RAVEX_OUTER_REGION" not in env
     command = c.trainer(arm, arm.nodes[1])
-    # Two starting nodes and one join: three disjoint shards.
-    assert command[command.index("--shards") + 1] == "3"
+    # Two starting nodes; the join is a third node, numbered past them.
+    assert command[command.index("--starting-nodes") + 1] == "2"
     assert command[command.index("--node") + 1] == "1"
 
 

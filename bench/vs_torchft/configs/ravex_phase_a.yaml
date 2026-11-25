@@ -1,12 +1,11 @@
 # Phase (a), the smoke run: the primary arm's outer loop with a full checkpoint
 # at each round instead of a delta at every step.
 #
-# The smoke run checks that rounds close and agree, measures the step, and
-# runs on the cheapest machines that fit; a delta per step of deepseek-1b is
-# about a full's 11 GB (with Adam the moments barely delta), which those
-# machines' disks would not hold for a window. So (a) checkpoints the classical
-# way, and its tokens/s is the outer loop's without Ravex's per-step save; the
-# delta's cost is measured by the row the plan keeps for it in (b).
+# The smoke run checks that rounds close and agree and measures the step. It
+# checkpoints the classical way, so its tokens/s is the outer loop's without
+# the saves Moonclip would choose between two checkpoints (a full of GPT-2
+# small with AdamW's moments is about 1.5 GB); what those saves cost is
+# measured by the row the plan keeps for it in (b).
 backend: moonclip
 delta: false
 checkpoint_every: 100

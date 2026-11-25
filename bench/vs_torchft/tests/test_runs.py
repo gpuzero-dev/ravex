@@ -1,6 +1,6 @@
 """Whole phases on one Linux machine: two Ravex nodes and two torchft nodes, then the faults.
 
-Small enough for a CPU - deepseek-1b's tiny config with a 512-token
+Small enough for a CPU - the bench's tiny GPT with a 512-token
 vocabulary, sequences of 32, H of 10 - and run the way a phase is run on
 rented machines: ``controller.py`` with a hosts file, here naming this
 machine, then ``make_table.py --checks``. What it proves is that the harness
@@ -22,12 +22,9 @@ import numpy as np
 import pytest
 
 HERE = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-DEEPSEEK = os.environ.get("DEEPSEEK_1B", "")
 
 pytestmark = [
     pytest.mark.skipif(sys.platform != "linux", reason="multi-process runs are judged on Linux (conftest.py)"),
-    pytest.mark.skipif(not os.path.isfile(os.path.join(DEEPSEEK, "data.py")),
-                       reason="DEEPSEEK_1B must name a deepseek-1b checkout with data.py"),
 ]
 
 VOCAB = 512
@@ -49,7 +46,7 @@ def data(folder) -> str:
 
 
 def train_args(steps: int, pace: float = 0.0):
-    return ["--config", "configs/tiny.json", "--override", "vocab_size=%d" % VOCAB, "--steps", str(steps),
+    return ["--model", "tiny", "--override", "vocab_size=%d" % VOCAB, "--steps", str(steps),
             "--inner-steps", "10", "--batch", "2", "--accum", "2", "--seq", "32", "--lr", "3e-3",
             "--warmup", "5", "--eval-batches", "2", "--pace", str(pace)]
 
@@ -61,7 +58,7 @@ def run_phase(tmp_path, arms, faults=(), steps=30, pace=0.0, timeout=900, **extr
     hosts.write_text(json.dumps({"hosts": [
         {"name": "here%d" % i, "local": True, "address": "127.0.0.1", "workdir": str(workdir),
          "python": sys.executable} for i in range(8)]}))
-    phase = {"results": str(tmp_path / "results"), "bench": HERE, "deepseek": DEEPSEEK,
+    phase = {"results": str(tmp_path / "results"), "bench": HERE,
              "data": data(tmp_path / "data"), "train_args": train_args(steps, pace),
              "env": {"MOONCLIP_FSYNC": "0", "OMP_NUM_THREADS": "1"}, "arms": arms, "faults": list(faults),
              "coordinator_head_start": 3}
@@ -179,8 +176,8 @@ def test_the_checkpoint_restart_arm_stops_everyone_and_resumes(tmp_path):
 
 
 def test_the_vram_check_runs_the_inner_step_alone(tmp_path):
-    done = subprocess.run([sys.executable, os.path.join(HERE, "vram_check.py"), "--deepseek", DEEPSEEK,
-                           "--data", data(tmp_path / "data"), "--node", "0", "--shards", "1", "--arm", "a1",
+    done = subprocess.run([sys.executable, os.path.join(HERE, "vram_check.py"),
+                           "--data", data(tmp_path / "data"), "--node", "0", "--starting-nodes", "1", "--arm", "a1",
                            "--events", str(tmp_path / "a1.jsonl")] + train_args(8),
                           capture_output=True, text=True, timeout=300, env={**os.environ, "OMP_NUM_THREADS": "1"})
     assert done.returncode == 0, done.stdout + done.stderr

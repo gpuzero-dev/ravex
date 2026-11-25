@@ -1,6 +1,6 @@
-"""The Ravex arm: deepseek-1b under ``@ravex.train_loop`` with the outer loop on.
+"""The Ravex arm: the bench's GPT under ``@ravex.train_loop`` with the outer loop on.
 
-    python train_ravex.py --arm ravex --node 0 --shards 2 --data data \\
+    python train_ravex.py --arm ravex --node 0 --starting-nodes 2 --data data \\
         --events results/ravex/node0/events.jsonl --steps 300 --inner-steps 100
 
 The script knows nothing about the other nodes. Everything that makes it one
@@ -71,7 +71,8 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     common.add_arguments(parser)
     args = parser.parse_args()
-    setup = common.Setup(args)
+    # Ravex cuts the loader among the nodes (GPU-417): the script does not.
+    setup = common.Setup(args, cut=False)
 
     @ravex.train_loop(
         outer_loop=True,

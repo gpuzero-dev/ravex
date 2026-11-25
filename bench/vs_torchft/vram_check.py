@@ -1,6 +1,6 @@
 """Gate a1 of phase (a): does the benchmark's step fit the GPU, and how fast is it?
 
-    python vram_check.py --data /workspace/data --node 0 --shards 1 \\
+    python vram_check.py --data /workspace/data --node 0 --starting-nodes 1 \\
         --events results/a1/events.jsonl --arm a1 --steps 50 [--compile]
 
 One process, no outer loop and no framework: the inner step both arms run,
@@ -24,7 +24,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     common.add_arguments(parser)
     args = parser.parse_args()
-    setup = common.Setup(args)
+    setup = common.Setup(args, cut=True)
     events = common.Events(args.events, args.arm, args.node)
     model, optimizer, schedule = setup.build()
     if setup.cuda:

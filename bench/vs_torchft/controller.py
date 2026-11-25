@@ -213,9 +213,9 @@ class Controller:
 
     # Commands.
 
-    def shards(self, arm: Arm) -> int:
-        joins = sum(1 for f in self.faults if f.arm == arm.name and f.action == "join")
-        return int(arm.spec.get("shards", len(arm.spec["nodes"]) + joins))
+    def starting_nodes(self, arm: Arm) -> int:
+        """How many nodes the arm starts with: a node numbered past them joined later."""
+        return len(arm.spec["nodes"])
 
     def trainer(self, arm: Arm, node: Node, steps: Optional[int] = None) -> List[str]:
         script = "train_torchft.py" if arm.kind == "torchft" else "train_ravex.py"
@@ -224,8 +224,8 @@ class Controller:
         if steps is not None:
             arguments += ["--steps", str(steps)]
         command = [node.host.python, os.path.join(bench, script).replace("\\", "/"),
-                   "--arm", arm.name, "--node", str(node.number), "--shards", str(self.shards(arm)),
-                   "--data", self.phase["data"], "--deepseek", self.phase["deepseek"],
+                   "--arm", arm.name, "--node", str(node.number), "--starting-nodes", str(self.starting_nodes(arm)),
+                   "--data", self.phase["data"],
                    "--events", node.host.path(node.events)] + arguments
         if arm.kind == "torchft":
             command += ["--advertise", node.host.address]

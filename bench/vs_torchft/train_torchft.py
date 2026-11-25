@@ -1,15 +1,15 @@
-"""The torchft arm: deepseek-1b under torchft's ``Manager`` and ``DiLoCo``, without TorchTitan.
+"""The torchft arm: the bench's GPT under torchft's ``Manager`` and ``DiLoCo``, without TorchTitan.
 
     torchft_lighthouse --bind [::]:29510 --min_replicas 1      # once, on node 0's host
     TORCHFT_LIGHTHOUSE=http://<node0>:29510 python train_torchft.py --arm torchft \\
-        --node 0 --shards 2 --data data --events results/torchft/node0/events.jsonl \\
+        --node 0 --starting-nodes 2 --data data --events results/torchft/node0/events.jsonl \\
         --steps 300 --inner-steps 100 --advertise <this host's address>
 
 This is the path torchft's own ``train_diloco.py`` takes for a plain
 ``nn.Module``: one ``Manager`` per replica group, here a group of one process
 on one GPU, and ``DiLoCo`` wrapped around the inner optimizer. TorchTitan's
-integration is the tuned path, but it wires up Llama 3 only, and deepseek-1b
-is a mixture of experts; the README says so beside the results.
+integration is the tuned path, but it wires up Llama 3 only; the GPT here is
+a plain module, and the README says so beside the results.
 
 The settings are the plan's primary comparison (section 3), the same numbers
 as the Ravex arm's: one fragment, ``sync_every`` = H, an outer Nesterov SGD at
@@ -73,7 +73,8 @@ def main() -> None:
     if not args.lighthouse:
         raise SystemExit("--lighthouse or TORCHFT_LIGHTHOUSE must name the lighthouse")
 
-    setup = common.Setup(args)
+    # No Ravex here to cut the data among the nodes: the bench does, by Ravex's rule.
+    setup = common.Setup(args, cut=True)
     events = common.Events(args.events, args.arm, args.node)
     model, optimizer, schedule = setup.build()
 

@@ -1,10 +1,9 @@
 #!/bin/sh
-# Prepare one rented GPU machine for the benchmark, from three archives the
+# Prepare one rented GPU machine for the benchmark, from two archives the
 # operator copied into /workspace:
 #
 #   ravex.tar        git -C ravex archive -o ravex.tar <commit>
-#   deepseek-1b.tar  git -C deepseek-1b archive -o deepseek-1b.tar <commit>
-#   data.tar         train.bin, val.bin and meta.json from deepseek-1b's prepare.py
+#   data.tar         train.bin, val.bin and meta.json from the bench's prepare.py
 #
 # Archives rather than a clone, so a machine runs exactly the commits the
 # results name, whether or not they have been pushed, and needs no access to
@@ -16,7 +15,7 @@
 # versions, and the data's hashes, which must be the same on every machine.
 set -eu
 cd /workspace
-for name in ravex deepseek-1b data; do
+for name in ravex data; do
     mkdir -p "$name"
     tar -xf "$name.tar" -C "$name"
 done

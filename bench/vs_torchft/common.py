@@ -6,12 +6,18 @@ inner step from here. Each arm adds one thing: how a round reaches the model -
 Ravex's outer loop at the top of an iteration, torchft's ``DiLoCo`` inside the
 optimizer's step - and how the arm learns that one landed.
 
-**The model and the data are deepseek-1b's**, imported from a checkout of
-https://github.com/JHNMACHINE/deepseek-1b at the commit the README pins:
-``model.py`` for the network and ``data.py`` for :func:`shard`, which gives
-node ``k`` of a run its own disjoint windows at each step (GPU-204). Without
-it every node of a multi-node run trains on the same batches and averaging
-their deltas averages copies; both arms call it with the same arguments.
+**The model is this folder's GPT** (``model.py``), GPT-2 small on the GPUs
+and a tiny one in the CPU tests, so the bench needs no other repository.
+
+**The data is a shuffled ``DataLoader``, cut per node the way Ravex cuts
+one** (GPU-417, GPU-213). A node of a run must read its own part, or
+averaging the nodes' deltas averages copies. Under Ravex the script does not
+cut anything: Ravex gives starting node ``k`` of ``n`` the positions ``k, k+n,
+...`` of the epoch's shuffled order and a node that joined later the whole
+data in an order of its own, under the loader. The torchft arm has no Ravex,
+so :class:`Part` cuts its loader by the same rule - the starting nodes'
+parts disjoint, a joiner's order its own - and the two arms read data that is
+split the same way, if not in the same order.
 
 **Everything a result is made from goes to ``events.jsonl``**, one JSON object
 per line, flushed as it is written, so a node killed mid-run leaves every
@@ -27,7 +33,6 @@ import json
 import math
 import os
 import socket
-import sys
 import time
 from typing import Any, Callable, Dict, List, Optional
 
@@ -47,12 +52,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     H = 250; an outer Nesterov SGD at lr 0.7 and momentum 0.9, DiLoCo's
     published setting. An arm that changes one of them says so in its name.
     """
-    parser.add_argument("--deepseek", default=os.environ.get("DEEPSEEK_1B", ""),
-                        help="a checkout of deepseek-1b; DEEPSEEK_1B by default")
-    parser.add_argument("--config", default="configs/1b.json", help="deepseek-1b model config, relative to --deepseek")
+    parser.add_argument("--model", default="124m", help="a preset of model.py: 124m, or tiny for the CPU tests")
     parser.add_argument("--override", action="append", default=[], metavar="KEY=VALUE",
-                        help="change one field of the model config; the CPU tests shrink the vocabulary")
-    parser.add_argument("--data", required=True, help="a directory with train.bin and val.bin from deepseek-1b's prepare.py")
+                        help="change one field of the model's config")
+    parser.add_argument("--data", required=True, help="a directory with train.bin and val.bin from prepare.py")
     parser.add_argument("--steps", type=int, default=300, help="local steps this node trains")
     parser.add_argument("--batch", type=int, default=4)
     parser.add_argument("--accum", type=int, default=4)
@@ -63,12 +66,11 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--schedule-steps", type=int, default=None,
                         help="the length the cosine is drawn over; --steps by default, the run's length for a joiner")
     parser.add_argument("--weight-decay", type=float, default=0.1)
-    parser.add_argument("--balance-rate", type=float, default=0.001)
     parser.add_argument("--eval-batches", type=int, default=32)
     parser.add_argument("--seed", type=int, default=1337)
-    parser.add_argument("--node", type=int, required=True, help="this node's number and data shard")
-    parser.add_argument("--shards", type=int, required=True,
-                        help="disjoint data shards: the most nodes the arm will ever have, joiners included")
+    parser.add_argument("--node", type=int, required=True, help="this node's number")
+    parser.add_argument("--starting-nodes", type=int, required=True,
+                        help="how many nodes the arm starts with; a node numbered from there on is a joiner")
     parser.add_argument("--inner-steps", type=int, default=250, help="H, local steps per round")
     parser.add_argument("--outer-lr", type=float, default=0.7)
     parser.add_argument("--outer-momentum", type=float, default=0.9)
@@ -103,21 +105,6 @@ class Events:
         self._file.close()
 
 
-def import_deepseek(path: str):
-    """deepseek-1b's ``model`` and ``data`` modules, from its checkout."""
-    if not path or not os.path.isfile(os.path.join(path, "data.py")):
-        raise SystemExit(
-            "--deepseek (or DEEPSEEK_1B) must name a checkout of deepseek-1b that has "
-            "data.py, the per-node shard (GPU-204); got %r" % path
-        )
-    if path not in sys.path:
-        sys.path.insert(0, path)
-    import data as deepseek_data  # type: ignore[import-not-found]
-    import model as deepseek_model  # type: ignore[import-not-found]
-
-    return deepseek_model, deepseek_data
-
-
 def parse_overrides(pairs: List[str]) -> Dict[str, Any]:
     overrides: Dict[str, Any] = {}
     for pair in pairs:
@@ -126,29 +113,81 @@ def parse_overrides(pairs: List[str]) -> Dict[str, Any]:
     return overrides
 
 
+class Windows(torch.utils.data.Dataset):
+    """The token file as windows of ``seq + 1`` tokens that do not overlap."""
+
+    def __init__(self, tokens: np.ndarray, seq: int) -> None:
+        self.tokens, self.seq = tokens, seq
+
+    def __len__(self) -> int:
+        return (len(self.tokens) - 1) // self.seq
+
+    def __getitem__(self, index: int) -> torch.Tensor:
+        start = index * self.seq
+        return torch.from_numpy(self.tokens[start : start + self.seq + 1].astype(np.int64))
+
+
+class Part(torch.utils.data.Sampler):
+    """The torchft arm's cut of the data: Ravex's rule, applied by the bench.
+
+    Each epoch is a permutation of the windows seeded from ``seed`` and the
+    epoch, the same on every node. Starting node ``k`` of ``n`` reads its
+    positions ``k, k+n, ...``, so the starting nodes' parts are disjoint; a
+    node numbered ``n`` or more joined later and reads every window in an
+    order of its own. That is what Ravex does under the Ravex arm's loader
+    (``docs/configuration.md``, GPU-417), so both arms split the data alike.
+    """
+
+    def __init__(self, length: int, node: int, starting: int, seed: int) -> None:
+        self.length, self.node, self.starting, self.seed = length, node, starting, seed
+        self.epoch = 0
+
+    def _order(self) -> List[int]:
+        joiner = self.node >= self.starting
+        generator = torch.Generator().manual_seed(
+            self.seed + 1_000_003 * (self.node + 1) * joiner + 7919 * self.epoch
+        )
+        order = torch.randperm(self.length, generator=generator).tolist()
+        return order if joiner else order[self.node :: self.starting]
+
+    def __iter__(self):
+        order = self._order()
+        self.epoch += 1
+        return iter(order)
+
+    def __len__(self) -> int:
+        return len(self._order())
+
+
 class Setup:
     """The model, the inner optimizer, the schedule and the data of one node.
 
     Built the same way in both arms, from a seed every node shares, so every
     node starts from the same parameters: torchft is told so
     (``init_sync=False``) and Ravex makes sure of it at its seed round anyway.
+
+    ``cut`` says who splits the data among the nodes: False for the Ravex
+    arm, where Ravex does under the loader; True where nothing else would -
+    the torchft arm, and the VRAM check, a node of one.
     """
 
-    def __init__(self, args: argparse.Namespace) -> None:
+    def __init__(self, args: argparse.Namespace, cut: bool) -> None:
+        from model import config_of
+
         self.args = args
-        deepseek_model, deepseek_data = import_deepseek(args.deepseek)
-        self.shard = deepseek_data.shard
-        config = args.config if os.path.isabs(args.config) else os.path.join(args.deepseek, args.config)
+        self.cut = cut
         overrides = parse_overrides(args.override)
         overrides["max_seq_len"] = args.seq
-        self.model_args = deepseek_model.ModelArgs.load(config, **overrides)
-        self.counted = deepseek_model.count_parameters(self.model_args)
+        self.config = config_of(args.model, **overrides)
         self.train = np.memmap(os.path.join(args.data, "train.bin"), dtype="<u4", mode="r")
         self.val = np.memmap(os.path.join(args.data, "val.bin"), dtype="<u4", mode="r")
+        top = int(max(self.train.max(), self.val.max()))
+        if top >= self.config.vocab_size:
+            raise SystemExit("the data has token %d, past the model's vocabulary of %d" % (top, self.config.vocab_size))
         self.cuda = torch.cuda.is_available()
         self.device = torch.device("cuda" if self.cuda else "cpu")
-        # bf16 autocast on a GPU, as deepseek-1b trains; full precision on a
-        # CPU, where only the tests run.
+        # bf16 autocast on a GPU; full precision on a CPU, where only the
+        # tests run.
         self.autocast = (
             torch.autocast("cuda", dtype=torch.bfloat16) if self.cuda else torch.autocast("cpu", enabled=False)
         )
@@ -156,17 +195,21 @@ class Setup:
             torch.backends.cuda.matmul.allow_tf32 = True
         self.tokens_per_step = args.batch * args.accum * args.seq
         self.schedule_steps = args.schedule_steps or args.steps
-        # Fails now, before anything is built, if this node's shard does not
-        # exist.
-        self.shard(args.node, 0, length=len(self.train), seq=args.seq, batch=1, accum=1,
-                   seed=args.seed, shards=args.shards)
-        self._deepseek_model = deepseek_model
+        self.parameters = 0
+        self._batches = None
 
     def build(self):
-        """The model, its AdamW and its schedule. Call inside the arm's own setup."""
+        """The model, its AdamW, its schedule and its loader. Call inside the arm's own setup.
+
+        Inside, because the Ravex arm's loader has to be made under
+        ``@ravex.train_loop`` for Ravex to cut it.
+        """
+        from model import GPT, count_parameters
+
         args = self.args
         torch.manual_seed(args.seed)
-        model = self._deepseek_model.Transformer(self.model_args).to(self.device)
+        model = GPT(self.config).to(self.device)
+        self.parameters = count_parameters(model)
         decay = [p for _, p in model.named_parameters() if p.dim() >= 2]
         plain = [p for _, p in model.named_parameters() if p.dim() < 2]
         optimizer = torch.optim.AdamW(
@@ -175,18 +218,28 @@ class Setup:
         )
         schedule = torch.optim.lr_scheduler.LambdaLR(optimizer, lambda s: self.lr_at(s) / args.lr)
         if args.compile:
-            for block in model.layers:
-                block.attn.compile()
-                block.attn_norm.compile()
-                block.ffn_norm.compile()
-                if isinstance(block.ffn, self._deepseek_model.MoE):
-                    block.ffn.shared_experts.compile()
-                else:
-                    block.ffn.compile()
+            for block in model.blocks:
+                block.compile()
+        windows = Windows(self.train, args.seq)
+        if self.cut:
+            sampler = Part(len(windows), args.node, args.starting_nodes, args.seed)
+            self.loader = torch.utils.data.DataLoader(windows, batch_size=args.batch, sampler=sampler, drop_last=True)
+        else:
+            self.loader = torch.utils.data.DataLoader(windows, batch_size=args.batch, shuffle=True, drop_last=True)
         return model, optimizer, schedule
 
+    def _next_batch(self) -> torch.Tensor:
+        """The loader's next batch, starting a new epoch when one runs out."""
+        if self._batches is None:
+            self._batches = iter(self.loader)
+        try:
+            return next(self._batches)
+        except StopIteration:
+            self._batches = iter(self.loader)
+            return next(self._batches)
+
     def lr_at(self, step: int) -> float:
-        """deepseek-1b's schedule, on this node's local step (plan, section 3)."""
+        """Warmup then a cosine to a tenth, on this node's local step (plan, section 3)."""
         args = self.args
         if step < args.warmup:
             return args.lr * (step + 1) / args.warmup
@@ -221,22 +274,20 @@ class Setup:
         return sum(losses) / len(losses)
 
     def inner_step(self, model, optimizer, schedule, step: int) -> Dict[str, float]:
-        """One local step, identical in both arms: the shard's micro-batches, clip, AdamW, schedule, balance."""
+        """One local step, identical in both arms: the loader's micro-batches, clip, AdamW, schedule."""
         args = self.args
         model.train()
         total = 0.0
-        for starts in self.shard(args.node, step, length=len(self.train), seq=args.seq, batch=args.batch,
-                                 accum=args.accum, seed=args.seed, shards=args.shards):
-            x, y = self.windows(self.train, starts)
-            loss = self.loss_of(model, x, y) / args.accum
+        for _ in range(args.accum):
+            window = self._next_batch().to(self.device, non_blocking=True)
+            loss = self.loss_of(model, window[:, :-1], window[:, 1:]) / args.accum
             loss.backward()
             total += loss.item()
         grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
         optimizer.step()
         optimizer.zero_grad(set_to_none=True)
         schedule.step()
-        imbalance = model.balance(args.balance_rate)
-        return {"loss": total, "grad_norm": float(grad_norm), "lr": schedule.get_last_lr()[0], "imbalance": imbalance}
+        return {"loss": total, "grad_norm": float(grad_norm), "lr": schedule.get_last_lr()[0]}
 
 
 def checksum(model: torch.nn.Module) -> float:
@@ -248,8 +299,8 @@ def fingerprint(model: torch.nn.Module) -> float:
     """A cheap stand-in for :func:`checksum`, taken twice per step.
 
     An outer step moves every parameter, so the first and the last tensor are
-    enough to see one happen; the whole vector of a 0.94B model would cost a
-    pass over 3.8 GB at every step.
+    enough to see one happen; the whole vector would cost a pass over every
+    parameter twice a step.
     """
     params = list(model.parameters())
     return params[0].detach().double().sum().item() + params[-1].detach().double().sum().item()
@@ -284,11 +335,11 @@ def train(
         "start",
         host=socket.gethostname(),
         device=str(setup.device),
-        parameters=setup.counted["total"],
-        active=setup.counted["active"],
+        parameters=setup.parameters,
+        model=args.model,
         tokens_per_step=setup.tokens_per_step,
         inner_steps=args.inner_steps,
-        shards=args.shards,
+        starting_nodes=args.starting_nodes,
         steps=args.steps,
         first_step=first_step,
         outer_lr=args.outer_lr,

@@ -8,3 +8,7 @@ outer_overlap: false
 outer_combine: mean
 outer_deadline: 60
 metrics_every: 10
+# A checkpoint inside the CPU tests' 30 steps. Since GPU-517 nothing is saved
+# before the first checkpoint, and with the default of 100 the
+# checkpoint-restart test's kill at step 15 left nothing to resume from.
+checkpoint_every: 10
