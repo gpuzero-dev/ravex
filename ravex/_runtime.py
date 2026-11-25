@@ -333,6 +333,9 @@ class RavexRuntime:
         #: (`_keep_listing`, GPU-504); None while there is no shipper.
         self._listing_stop: Optional[threading.Event] = None
         self._listing_thread: Optional[threading.Thread] = None
+        #: Wakes `_keep_listing` for a list now rather than at its next turn:
+        #: set at each checkpoint, whose own thread must not list (GPU-517).
+        self._listing_now = threading.Event()
         #: How the run ended, for `status.json`: set by the train_loop wrapper
         #: when the function raised, so a crash does not read as "finished".
         self.exit_state = "finished"
@@ -1196,7 +1199,16 @@ class RavexRuntime:
             self._upload_store_file(STATUS_FILE)
         except Exception as exc:
             logger.debug("Cannot update the run's status: %s", exc)
-        self._ship_checkpoints()
+        # Not on this thread while the run trains: listing the store waits for
+        # the write in flight, and at a checkpoint that is the checkpoint's own.
+        # On deepseek-1b a 9.5 GB full held the training loop for the 80 s of
+        # its write, every checkpoint (GPU-517). The listing thread sends it
+        # instead, woken now; at the end of the run there is no training to
+        # hold up, and the last list must be sent before the store closes.
+        if state == "running" and self._listing_thread is not None:
+            self._listing_now.set()
+        else:
+            self._ship_checkpoints()
 
     def _open_shipper(self) -> Any:
         """Start sending this run to the platform's backend, if one is configured.
@@ -1248,7 +1260,12 @@ class RavexRuntime:
         the GIL go while it waits: training is never held up by it. An
         unchanged list is not sent again (`Shipper.checkpoints`).
         """
-        while not stop.wait(self.LIST_EVERY_SECONDS):
+        while not stop.is_set():
+            # At its turn, or sooner when a checkpoint asks (`_record_status`).
+            self._listing_now.wait(self.LIST_EVERY_SECONDS)
+            self._listing_now.clear()
+            if stop.is_set():
+                return
             self._ship_checkpoints()
 
     def _stop_listing(self) -> None:
@@ -1256,6 +1273,7 @@ class RavexRuntime:
         if self._listing_stop is None:
             return
         self._listing_stop.set()
+        self._listing_now.set()
         if self._listing_thread is not None and self._listing_thread is not threading.current_thread():
             self._listing_thread.join()
         self._listing_stop = None

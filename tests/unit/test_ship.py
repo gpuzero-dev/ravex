@@ -487,3 +487,50 @@ class TestTheStoresAddress:
         store = str(tmp_path / "harold-001")
         self.write_run(store, {"type": "r2", "bucket": "gpuzero", "prefix": "runs/harold-001"})
         assert Shipper("http://127.0.0.1:9", store, store_uri="s3://other/x").store_uri == "s3://other/x"
+
+
+def test_a_checkpoint_lists_the_store_off_the_training_thread(tmp_path):
+    """GPU-517: at a checkpoint the status went out with the store's list, on
+    the training thread, and listing waits for the write in flight - the
+    checkpoint's own. On deepseek-1b a 9.5 GB full held the loop for the 80 s
+    of its write. The listing thread sends it now, and the checkpoint returns."""
+    import threading
+
+    from ravex._config import RavexConfig
+    from ravex._runtime import RavexRuntime
+
+    config = RavexConfig()
+    config.storage.path = str(tmp_path)
+    runtime = RavexRuntime(config)
+    listed = []
+    writer_done = threading.Event()
+
+    class Writing:
+        def known_checkpoints(self):
+            listed.append(threading.current_thread().name)
+            writer_done.wait(10)
+            return []
+
+    class Shipper:
+        def checkpoints(self, entries):
+            pass
+
+    runtime._backend = Writing()
+    runtime._shipper = Shipper()
+    runtime._run_record = {"run_id": "r"}
+    runtime._listing_stop = threading.Event()
+    runtime._listing_thread = threading.Thread(
+        target=runtime._keep_listing, args=(runtime._listing_stop,), name="ravex-checkpoint-list", daemon=True
+    )
+    runtime._listing_thread.start()
+    try:
+        started = time.monotonic()
+        runtime._record_status("running")
+        assert time.monotonic() - started < 1, "the checkpoint waited for the store's listing"
+        deadline = time.monotonic() + 5
+        while not listed and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert listed == ["ravex-checkpoint-list"], listed
+    finally:
+        writer_done.set()
+        runtime._stop_listing()

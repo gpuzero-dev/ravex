@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.16.1 — unreleased
+
+### Fixed
+
+- **A checkpoint no longer holds the training loop for its own write
+  (GPU-517).** At each `checkpoint_every` step the run sent the platform its
+  list of checkpoints from the training thread, and listing the store waits
+  for the write in flight - the checkpoint's own. On deepseek-1b a 9.5 GB full
+  stopped training for the 80 s of its write, every checkpoint. The listing
+  thread of GPU-504 sends the list now, woken by the checkpoint; only at the
+  end of the run is it sent from the run's thread, before the store closes.
+
 ## 0.16.0 — 2026-11-25
 
 ### Changed
