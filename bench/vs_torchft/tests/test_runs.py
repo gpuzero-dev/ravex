@@ -105,14 +105,24 @@ TORCHFT = {"name": "torchft", "kind": "torchft", "nodes": ["here2", "here3"], "p
 
 
 def test_phase_a_in_small_two_nodes_per_system_three_rounds_each(tmp_path):
-    done, results = run_phase(tmp_path, [RAVEX, TORCHFT])
+    # Both replicas in the first quorum: with one as the floor, a lighthouse
+    # whose second replica was still importing torch past join_timeout_ms -
+    # eight processes starting on one CPU - formed it alone, and each node
+    # then trained its own rounds (seen about one run in four).
+    done, results = run_phase(tmp_path, [RAVEX, {**TORCHFT, "min_replicas": 2}])
     assert done.returncode == 0, done.stdout[-3000:] + done.stderr[-3000:] + logs(results)
     verdict = table(results, 3)
     print(verdict.stdout)
-    # Every check but the speed one: on a CPU shared by four trainers, and
-    # with Ravex's checkpoint at every step inside its step time while
-    # torchft writes none, the two arms' tokens/s say nothing here.
-    failed = [line for line in verdict.stdout.splitlines() if line.startswith("NO-GO") and "tokens/s" not in line]
+    # Every check but the two that compare the arms. Speed: on a CPU shared
+    # by four trainers, a model of 44k parameters is all fixed costs - Ravex's
+    # patches and its offer of a save at every step, a round's dial and
+    # snapshot - against an allreduce of nothing, and says nothing of a GPU.
+    # Losses: since GPU-213 the arms split the data alike but read it in
+    # orders of their own, and after 30 steps of this model that alone moves
+    # the final losses about 0.1 apart, either side of the threshold.
+    comparing = ("tokens/s", "final eval losses")
+    failed = [line for line in verdict.stdout.splitlines()
+              if line.startswith("NO-GO") and not any(what in line for what in comparing)]
     assert not failed and "GO " in verdict.stdout, verdict.stdout + logs(results)
     for arm in ("ravex", "torchft"):
         rounds = [e for e in events(results, arm) if e["event"] == "round"]
@@ -123,7 +133,7 @@ def test_phase_a_in_small_two_nodes_per_system_three_rounds_each(tmp_path):
 
 def test_a_join_then_a_kill_on_both_systems(tmp_path):
     # The join well before the kill, as the plan orders them: a Ravex joiner
-    # is admitted two rounds after it asks (JOIN_MARGIN), and one that is
+    # is admitted one or two rounds after it asks (GPU-213), and one that is
     # still being admitted when a member dies waits on that member's
     # acknowledgement first, which on a run this short can take its whole
     # remaining time.
