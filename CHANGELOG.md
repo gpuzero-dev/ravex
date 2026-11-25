@@ -15,6 +15,17 @@
   members still passing that boundary to acknowledge it, rather than asking
   for a later round. In the benchmark against torchft, on rounds of about
   3 s, a joiner now takes 12 s to contribute, from 15; torchft's takes 7.
+- **The outer loop is built at the top of the first iteration, before any
+  step (GPU-213).** It was built at the first `optimizer.step()`, when every
+  node had already trained one step on its own data, so no two held the same
+  parameters and the shortcut below could never apply: on RunPod the
+  download it was written to skip still happened. A model registered after
+  the first batch is still taken at its first step.
+- **A `DistributedSampler` is split across the nodes too (GPU-213).** In a run
+  of several nodes each with several processes, the sampler is widened from
+  the node's processes to the run's: node `k` of `n`, process `r` of `p`,
+  reads part `k * p + r` of `n * p`. It was left alone, and rank 0 of every
+  node read the same data, which the outer loop then averaged.
 - **A node that already holds the run's starting state does not download
   it (GPU-213).** At the start of a run every node but the source fetched the
   outer parameters and momentum from the source, even when it had built the

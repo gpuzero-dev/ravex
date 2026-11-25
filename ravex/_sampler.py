@@ -391,6 +391,46 @@ def node_place(config: Any):
     return (member, parts)
 
 
+def _widen_distributed(sampler: Any, place) -> Any:
+    """A ``DistributedSampler`` over the processes of one node, made one over
+    the processes of the run (GPU-213).
+
+    The script splits the data among its node's ``num_replicas`` processes;
+    the run has ``parts`` such nodes. Starting node ``part``'s process
+    ``rank`` becomes rank ``part * num_replicas + rank`` of
+    ``parts * num_replicas``, so every process of every node reads its own
+    slice of the same order: ``DistributedSampler`` shuffles from ``seed +
+    epoch``, alike on every node of a script run alike. A node without a place
+    keeps its node's split, over an order of its own (a fresh ``seed``), as a
+    shuffled loader's does.
+    """
+    import math
+    import os
+
+    part, parts = place
+    if part is None:
+        sampler.seed = int.from_bytes(os.urandom(4), "little")
+        logger.info(
+            "This node has no place among the run's starting nodes, so its "
+            "processes read the whole data in an order of their own."
+        )
+        return sampler
+    local, rank = int(sampler.num_replicas), int(sampler.rank)
+    sampler.num_replicas = parts * local
+    sampler.rank = part * local + rank
+    length = len(sampler.dataset)  # type: ignore[arg-type]
+    if sampler.drop_last and length % sampler.num_replicas != 0:
+        sampler.num_samples = math.ceil((length - sampler.num_replicas) / sampler.num_replicas)
+    else:
+        sampler.num_samples = math.ceil(length / sampler.num_replicas)
+    sampler.total_size = sampler.num_samples * sampler.num_replicas
+    logger.info(
+        "This process reads part %d of %d of the data: node %d of %d, process %d of %d on it.",
+        sampler.rank + 1, sampler.num_replicas, part + 1, parts, rank + 1, local,
+    )
+    return sampler
+
+
 def share_between_nodes(sampler: Any, config: Any) -> Any:
     """The index sampler this node should read through, given the run.
 
@@ -407,7 +447,9 @@ def share_between_nodes(sampler: Any, config: Any) -> Any:
     - **One node, or no outer loop**: the sampler as it is.
 
     A ``DistributedSampler`` is the script's own split, among the processes
-    of one node, and is left alone.
+    of one node, and is widened to every process of the run rather than cut
+    again (:func:`_widen_distributed`, GPU-213): left alone, as it was, rank 0
+    of every node read the same data, and the outer loop averaged copies.
     """
     place = node_place(config)
     if place is None:
@@ -417,7 +459,7 @@ def share_between_nodes(sampler: Any, config: Any) -> Any:
         from torch.utils.data.distributed import DistributedSampler
 
         if isinstance(sampler, DistributedSampler):
-            return sampler
+            return _widen_distributed(sampler, place)
     except Exception:  # pragma: no cover - defensive
         return sampler
 

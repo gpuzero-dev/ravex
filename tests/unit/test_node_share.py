@@ -92,13 +92,33 @@ def test_the_parts_come_from_the_settings_a_node_is_given():
     assert node_place(settings(member=0, outer=False)) is None
 
 
-def test_a_distributed_sampler_is_the_scripts_own_split_and_left_alone():
+def test_a_distributed_sampler_is_widened_to_every_process_of_the_run():
+    """GPU-213: left alone, rank 0 of both nodes read the same samples and
+    the outer loop averaged copies. Two nodes of two processes each: four
+    disjoint quarters that together are the data."""
     from torch.utils.data.distributed import DistributedSampler
 
-    sampler = DistributedSampler(range(SAMPLES), num_replicas=2, rank=0)
+    seen = []
+    for member in (0, 1):
+        for rank in (0, 1):
+            sampler = DistributedSampler(range(SAMPLES), num_replicas=2, rank=rank, shuffle=True, seed=7)
+            built = DataLoader(range(SAMPLES), batch_size=BATCH, sampler=sampler)
+            attach_tracker(built, settings(member=member))
+            assert not isinstance(built.batch_sampler.sampler, NodeShare)
+            assert (sampler.num_replicas, sampler.rank) == (4, member * 2 + rank)
+            seen.append(sorted(int(i) for batch in built for i in batch))
+    assert all(len(part) == SAMPLES // 4 for part in seen)
+    assert sorted(i for part in seen for i in part) == list(range(SAMPLES)), "the parts overlap or miss samples"
+
+
+def test_a_distributed_sampler_on_a_node_without_a_place_keeps_its_node_split():
+    from torch.utils.data.distributed import DistributedSampler
+
+    sampler = DistributedSampler(range(SAMPLES), num_replicas=2, rank=1, shuffle=True, seed=7)
     built = DataLoader(range(SAMPLES), batch_size=BATCH, sampler=sampler)
-    attach_tracker(built, settings(member=1))
-    assert not isinstance(built.batch_sampler.sampler, NodeShare)
+    attach_tracker(built, settings(member=None))
+    assert (sampler.num_replicas, sampler.rank) == (2, 1)
+    assert sampler.seed != 7, "a node without a place reads an order of its own"
 
 
 def test_a_part_has_the_length_of_the_positions_it_keeps():
