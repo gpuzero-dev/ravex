@@ -15,6 +15,10 @@
   members still passing that boundary to acknowledge it, rather than asking
   for a later round. In the benchmark against torchft, on rounds of about
   3 s, a joiner now takes 12 s to contribute, from 15; torchft's takes 7.
+- **A node takes the run's starting state as soon as it is written
+  (GPU-213).** It asked for it every 0.2 s, and the source writes it within
+  moments of every node agreeing on it, so a start lost about that long on
+  every node but the source. It asks every 0.05 s.
 
 ## 0.16.2 — 2026-11-25
 

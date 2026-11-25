@@ -1171,6 +1171,9 @@ def seed_payload(loop) -> Dict[str, object]:
 #: GPU busy doing nothing, and would then have trained alone.
 SOURCE_SILENCE = 120.0
 
+#: Seconds between two asks for the run's starting state (GPU-213).
+SEED_POLL = 0.05
+
 
 class PeerSilent(RuntimeError):
     """A peer this node cannot do without stopped answering (GPU-443).
@@ -1247,7 +1250,12 @@ def adopt_run_state(loop, exchange, source: int, rank: int, deadline: float) -> 
                     "answered for %.0fs: it is gone. Ending this job rather than "
                     "waiting for it or training alone" % (source, silent)
                 )
-            time.sleep(0.2)
+            # The source writes the state the moment every node has decided
+            # it is the source, so it is usually there within a few tens of
+            # milliseconds; at 0.2 s a node waited about that long on every
+            # start, twice when the first ask came early (GPU-213). An ask
+            # answered "not yet" is a dial and a few bytes.
+            time.sleep(SEED_POLL)
     if state is None:
         return False
     apply_state(loop, state.delta)
