@@ -30,10 +30,17 @@ joiner whose ``admit_round`` is at most R". Two members that read the store at
 completely different moments still compute the *same* set for the same round,
 which is the property a store lookup on its own does not have.
 
-**The margin, and why it is two and not one.** A joiner does not pick "the next
-round". It observes a round number and adds :data:`JOIN_MARGIN`, so there is a
-full round — seconds to minutes of wall clock, not microseconds — between the
-key being on the store and the first round it affects. Round numbers are in
+**The margin, and when it is one.** A joiner observes a round number and adds
+a margin, so there is a full round — seconds to minutes of wall clock, not
+microseconds — between the key being on the store and the boundary of the
+first round it affects. A member reads the announcements at a boundary before
+it says who that round is over, so meeting one at the admit round's own
+boundary is in time. So a joiner that saw round ``r`` the moment the members
+wrote it down announces ``r + 1`` (:data:`JOIN_MARGIN_FRESH`, GPU-213): the
+whole of round ``r`` is between its key and that boundary. One that may have
+seen it late, or a run whose rounds are about a store round trip
+(:data:`FRESH_ROUND_SECONDS`), announces ``r + 2`` (:data:`JOIN_MARGIN`), as
+every join did until GPU-213, at the cost of a round idle. Round numbers are in
 lockstep by construction (``OuterLoop.abandon_round`` advances the counter
 precisely so that a failed exchange does not desynchronise it, and the round
 rendezvous in ``DeltaExchange`` makes a node ahead wait for one behind), so the
@@ -138,11 +145,12 @@ ACK_KEY = "ravex/gpu121/ack/%d/%d"
 #: in between, and one that missed some is waited for: the joiner asks again
 #: for a later round, the protocol's ordinary price.
 #:
-#: **What it does not save is the member.** With :data:`JOIN_MARGIN` at two,
-#: the boundary just before the admit round is the only one at which a member
-#: can take an announcement in time; one whose store reads fail there meets
-#: it at the admit round, and :meth:`Membership.refresh` raises
-#: :class:`MembershipError`. It leaves and rejoins, as it did before this key
+#: **What it does not save is the member.** A member takes an announcement in
+#: time at any boundary up to the admit round's own; one whose store reads
+#: fail at every one of them meets it after, and :meth:`Membership.refresh`
+#: raises :class:`MembershipError`. With the fresh margin of one round
+#: (GPU-213) the admit round's boundary is the only one, as the boundary
+#: before it was with two. It leaves and rejoins, as it did before this key
 #: existed. That is a departure, which is safe - the round's set is decided on
 #: the store - and not two models.
 #:
@@ -180,11 +188,34 @@ SERVED_KEY = "ravex/gpu406/served/%d"
 #: joiner waits for: a number that left will never give it.
 LEFT_KEY = "ravex/gpu142/left/%d"
 
-#: Rounds between a joiner observing the run and first contributing to it.
-#: One would be a race with the members' own boundary read; two leaves a whole
-#: round for a key already on the store to be noticed. It is not a tuning knob
-#: for throughput — it is the width of the window this module is closing.
+#: Rounds between a joiner observing the run and first contributing to it, at
+#: most. Two leave a whole round for a key already on the store to be noticed
+#: whenever the joiner observed it. It is not a tuning knob for throughput —
+#: it is the width of the window this module is closing.
 JOIN_MARGIN = 2
+
+#: The margin when the joiner saw the round move the moment it moved
+#: (GPU-213). A member reads announcements at each boundary *before* it says
+#: who the round is over (:meth:`Membership.refresh`), so one that meets an
+#: announcement at the boundary of the round it takes effect is in time. A
+#: joiner that announces as soon as the members wrote round ``r`` down gives
+#: them the whole of round ``r`` to have it on the store before boundary
+#: ``r + 1``. A round of two seemed safer and cost a joiner a whole round
+#: idle: on the benchmark against torchft, 15 s to contribute against its 7.
+JOIN_MARGIN_FRESH = 1
+
+#: The shortest round the fresh margin is used on, in seconds. Below it a
+#: round is about a store round trip, and a joiner that hesitates a little
+#: between seeing the round and writing its key - a starved machine, a
+#: thread waiting for the interpreter - would be late for the boundary.
+FRESH_ROUND_SECONDS = 1.0
+
+#: How long a joiner waits, once its round has come, for acknowledgements
+#: from live members that have not passed that boundary yet: a fraction of a
+#: round, since the members pass a boundary within moments of each other
+#: (the round's rendezvous), and the joiner's round waits for it meanwhile.
+ACK_WAIT_SHARE = 0.25
+ACK_WAIT_MAX = 30.0
 
 #: Seconds between a candidate's heartbeats, and how long members keep writing
 #: the outer parameters down for one they have stopped hearing from (GPU-263).
@@ -475,7 +506,9 @@ class Membership:
             known = self.accepted.get(peer)
             if known == admit:
                 continue
-            if known is None and admit <= round_number:
+            # At the admit round's own boundary is in time: this is read before
+            # the round's peers are (GPU-213). After it is not.
+            if known is None and admit < round_number:
                 raise MembershipError(
                     "rank %d announced that it joins at round %d and this node "
                     "is only seeing that now, at round %d. It has therefore "
@@ -788,10 +821,11 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
     1. **Say it exists**, which is what makes the members start writing their
        outer parameters down. Nothing is written for joiners on a run with
        none, so a run that never grows pays nothing for this.
-    2. **Read what round they are on** and announce ``that + JOIN_MARGIN``.
-       The margin is a whole round of slack for every member to notice the
-       announcement, and it is what makes membership at a given round the same
-       on all of them.
+    2. **Read what round they are on** and announce ``that + 1`` when it was
+       read as it moved, ``that + JOIN_MARGIN`` otherwise (GPU-213). The
+       margin is a whole round of slack for every member to notice the
+       announcement by the admit round's boundary, and it is what makes
+       membership at a given round the same on all of them.
     3. **Wait for that round to arrive**, and take the outer parameters the
        members published *for it* — not for the round observed in step 2. A
        joiner adopting an older snapshot would start ``admit - observed``
@@ -894,6 +928,9 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
             time.sleep(poll)
             continue
 
+        # Seen in the poll it moved in: the members wrote it down at this
+        # round's boundary a moment ago (GPU-213).
+        fresh = observed != moved_to
         if observed != moved_to:
             now = time.monotonic()
             if moved_to is not None and moved_at is not None and observed > moved_to:
@@ -913,7 +950,11 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
             deadline = max(given, min(moved_at + to_come * round_seconds,
                                       given + (JOIN_MARGIN + 2) * round_seconds))
 
-        floor = observed + JOIN_MARGIN
+        # One round when this node announces at the start of the round it saw
+        # and a round is long enough to cover the store round trips; two
+        # otherwise, whenever it saw it (GPU-213).
+        quick = fresh and round_seconds is not None and round_seconds >= FRESH_ROUND_SECONDS
+        floor = observed + (JOIN_MARGIN_FRESH if quick else JOIN_MARGIN)
         if announced_at is None or announced_at < observed:
             # Either the first go, or the round announced has been passed
             # while this node was still getting ready - which is a join that
@@ -941,6 +982,17 @@ def join(store, exchange, loop, rank: int, base_world: int, deadline: float,
         members = run_members(store, base_world, rank, window)
         live = still_serving(store, members, announced_from)
         missing = acknowledged(store, rank, live)
+        if missing:
+            # The first member to pass the boundary wrote the round; the
+            # others pass it within moments and acknowledge as they do. With
+            # one round of margin they meet the announcement at this very
+            # boundary, so a few of them are often still on their way
+            # (GPU-213): a moment is waited for them, not a round.
+            patience = min(ACK_WAIT_MAX, ACK_WAIT_SHARE * (round_seconds or 0.0)) or poll
+            until = min(deadline, time.monotonic() + max(patience, 2 * poll))
+            while missing and time.monotonic() < until:
+                time.sleep(poll)
+                missing = acknowledged(store, rank, live)
         if missing:
             logger.warning(
                 "Round %d arrived and rank(s) %s never acknowledged this "

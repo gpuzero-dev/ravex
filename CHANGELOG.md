@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **A node joins a run a round sooner (GPU-213).** A joiner announced the
+  round after next and stood idle for the whole round in between, so that
+  every member met the announcement at a boundary before the round it takes
+  effect. A member reads announcements at a boundary before it says who that
+  round is over, so meeting one at the admit round's own boundary is in time
+  too, and is accepted now. A joiner that saw the run's round move announces
+  the next round, when rounds last a second or more; otherwise it keeps the
+  two-round margin. Once its round has come it waits a moment for the
+  members still passing that boundary to acknowledge it, rather than asking
+  for a later round. In the benchmark against torchft, on rounds of about
+  3 s, a joiner now takes 12 s to contribute, from 15; torchft's takes 7.
+
 ## 0.16.2 — 2026-11-25
 
 ### Fixed

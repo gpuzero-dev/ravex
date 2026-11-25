@@ -261,6 +261,41 @@ def _members_at_a_pace(store, published, seconds, stop, ranks=range(BASE_WORLD))
             loop.round_number += 1
 
 
+def test_a_joiner_that_saw_the_round_move_enters_the_next_one(monkeypatch):
+    """GPU-213: one round of margin, not two, when the joiner announces the
+    moment the members wrote their round down and a round outlasts the store
+    round trips. The members meet the announcement at the admit round's own
+    boundary, before they say who that round is over, and take it in there.
+
+    Rounds of 0.4 s against a floor lowered to 0.2 s for the test: the floor
+    is the property, the seconds are the machine's."""
+    monkeypatch.setattr(_membership, "FRESH_ROUND_SECONDS", 0.2)
+    store = FakeStore()
+    published = Published()
+    stop = threading.Event()
+    announced = []
+    real_announce = _membership.announce
+
+    def recording(store_, rank, admit_round):
+        announced.append((_membership.state_round(store_), admit_round))
+        real_announce(store_, rank, admit_round)
+
+    monkeypatch.setattr(_membership, "announce", recording)
+    members = threading.Thread(target=_members_at_a_pace, args=(store, published, 0.4, stop), daemon=True)
+    members.start()
+    try:
+        # Two boundaries first, so the members have a pace to write down.
+        time.sleep(1.0)
+        joiner = Joiner()
+        assert _membership.join(store, published, joiner, BASE_WORLD, BASE_WORLD, time.monotonic() + 10)
+    finally:
+        stop.set()
+        members.join(5)
+    (seen, admit), = announced
+    assert admit == seen + 1, "announced round %d having seen %d: the margin is still two" % (admit, seen)
+    assert joiner.round_number == admit and joiner.written_back
+
+
 def test_a_join_over_rounds_longer_than_its_deadline_still_gets_in():
     """Rounds of 0.4 s and a deadline of 0.6 s: the join waits for the round
     to move, then two more, and its round's state comes at the end of that
@@ -401,8 +436,12 @@ def test_one_failed_boundary_is_a_retry_not_a_death():
     announcement writes neither its acknowledgement nor its mark there.
     Counted from the boundary before the admit round, that read as death and
     the joiner published without it. Counted from the round announced from,
-    the member's earlier mark keeps it in, and the joiner asks again instead
-    (GPU-406, review round 1)."""
+    the member's earlier mark keeps it in (GPU-406, review round 1).
+
+    Since GPU-213 a member meeting the announcement at the admit round's own
+    boundary is in time, so the blip costs nothing: rank 1 accepts and
+    acknowledges there, and the joiner enters a round rank 1 acknowledged it
+    for - never one it entered without that acknowledgement."""
     store = FakeStore()
     published = Published()
     stop = threading.Event()
@@ -450,10 +489,14 @@ def test_one_failed_boundary_is_a_retry_not_a_death():
         stop.set()
         thread.join(5)
     assert blinked, "the blip never happened: the test proves nothing"
-    first = int(store.get(_membership.ACK_KEY % (0, BASE_WORLD)).decode("utf-8"))
-    assert joiner.round_number != first, (
-        "the joiner entered round %d, the round rank 1 never acknowledged "
-        "because of one failed boundary" % first
+    assert 1 not in stopped, "one failed boundary stopped a live member"
+    assert store.check([_membership.ACK_KEY % (1, BASE_WORLD)]), (
+        "the joiner got in without rank 1's acknowledgement"
+    )
+    acknowledged_for = int(store.get(_membership.ACK_KEY % (1, BASE_WORLD)).decode("utf-8"))
+    assert joiner.round_number >= acknowledged_for, (
+        "the joiner entered round %d, before the round %d rank 1 took it in at"
+        % (joiner.round_number, acknowledged_for)
     )
 
 
