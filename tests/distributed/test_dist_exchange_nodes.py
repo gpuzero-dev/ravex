@@ -424,6 +424,28 @@ def test_leaving_does_not_outlive_a_peer_that_will_never_fetch(nodes):
     assert 0.8 < elapsed < 5, "linger ran %.1fs for a peer that never comes" % elapsed
 
 
+def test_leaving_waits_only_for_the_peers_the_last_round_was_decided_with(nodes):
+    """GPU-213: a peer left out of the last round is not fetching it.
+
+    Rank 9 died rounds ago and the last round was decided over ranks 0 and 1
+    alone, which has taken it: the node leaves at once rather than lingering
+    for the dead one, which also held a peer still training that asked this
+    node for a round it would never publish.
+    """
+    zero, one = nodes(0), nodes(1)
+    delta = a_delta()
+    publish(zero, delta, 4, 10)
+    zero.decided(4, [0, 1])
+    assert len(one.gather([0], 4, _report.expectation(delta), time.monotonic() + 10)) == 1
+    one.applied(4)
+
+    started = time.monotonic()
+    zero.close(linger=10, expect=[1, 9])
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 3, "linger ran %.1fs for rank 9, which the last round left out" % elapsed
+
+
 def test_a_publish_does_not_wait_for_a_fetch_in_flight(nodes, monkeypatch):
     """GPU-119, and it is the whole issue in one assertion.
 

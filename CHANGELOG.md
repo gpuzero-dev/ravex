@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A node that finishes no longer waits for a peer that died rounds ago
+  (GPU-213).** On its way out a node lingers until its peers have taken its
+  last round's report, so none closes that round one short. It waited for
+  every peer of the run, a dead one included, for the whole linger (up to 60
+  s), and a peer still training, which asked it for a round it would never
+  publish, waited as long. It waits now only for the peers its last round
+  was decided with. In the benchmark against torchft a kill had been charged
+  44 s that came from this, at the end of the run; it costs 0 s, and the
+  arm's tokens/s went from 251 to 607.
+
 ## 0.16.1 — 2026-11-25
 
 ### Fixed

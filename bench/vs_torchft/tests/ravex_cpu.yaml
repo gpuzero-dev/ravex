@@ -1,5 +1,6 @@
-# The primary arm's settings with a deadline a CPU test can wait out: a node
-# killed by the fault test leaves its peers waiting this long for its report.
+# The primary arm's settings with a deadline a CPU test can wait out. A node
+# killed by the fault test is left out of the next round at once; the deadline
+# bounds a peer that is alive and slow (GPU-213).
 backend: moonclip
 delta: true
 outer_save_dtype: null

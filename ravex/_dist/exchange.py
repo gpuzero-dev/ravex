@@ -1332,7 +1332,18 @@ class DeltaExchange:
         anybody. What the bound buys is that the ordinary case — everyone
         finishing within a round of each other — never loses a report, and the
         pathological one costs a known number of seconds.
+
+        **Only the peers the last round was decided with** (GPU-213). A peer
+        left out of that round is not fetching this node's report of it: it
+        died, or never got there. Waiting for it held a node that had
+        finished for the whole linger, and with it every peer still training,
+        which asked that node for a round it would never publish and waited
+        for the answer just as long - 57 s of a 60 s deadline in the bench,
+        charged to a kill that had cost nothing itself.
         """
+        if expect and self._last_decided is not None and self._last_decided[0] == self._round:
+            decided = set(self._last_decided[1])
+            expect = [peer for peer in expect if peer in decided]
         if linger > 0 and expect:
             deadline = time.monotonic() + linger
             with self._lock:
