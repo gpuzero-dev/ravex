@@ -86,13 +86,23 @@ def test_ravex_intercepts_the_framework_at_all(framework_workspace, script):
     )
 
 
+#: Where the exact-resume run is killed. 20 resumes from 16, an epoch boundary
+#: (an epoch is 8 batches); 14 resumes from 12, halfway through one. Only there
+#: does a loader that reads ahead of the loop show: Accelerate's, under
+#: HuggingFace, made a resume skip one batch too many and train one step too
+#: many until 2026-11-25, and a test only ever killed at 20 never saw it.
+DIE_AT = {"epoch-boundary": CRASH_AT, "mid-epoch": 14}
+
+
+@pytest.mark.parametrize("die_at", DIE_AT.values(), ids=DIE_AT.keys())
 @pytest.mark.parametrize("script", SCRIPTS_UNDER_TEST, ids=SCRIPT_IDS.values())
-def test_state_comes_back_exactly(framework_workspace, script):
+def test_state_comes_back_exactly(framework_workspace, script, die_at):
     """With the randomness removed, a resumed run must be indistinguishable.
 
-    This is the assertion that pins down model, optimizer, LR schedule and step
-    count. Anything that failed to restore would show up here as a divergent
-    loss, because nothing else varies between the two runs.
+    This is the assertion that pins down model, optimizer, LR schedule, step
+    count and dataset position. Anything that failed to restore would show up
+    here as a divergent loss, because nothing else varies between the two
+    runs; and the run must stop on the step budget, not one step past it.
     """
     deterministic = ("--no-shuffle", "--no-dropout")
 
@@ -102,8 +112,8 @@ def test_state_comes_back_exactly(framework_workspace, script):
     expected = losses(read_trace(reference))
     assert len(expected) >= CRASH_AT
 
-    run_dir = framework_workspace(f"{script}-exact-interrupted")
-    killed = run(run_dir, script, die_at=CRASH_AT, extra=deterministic)
+    run_dir = framework_workspace(f"{script}-exact-interrupted-{die_at}")
+    killed = run(run_dir, script, die_at=die_at, extra=deterministic)
     assert killed.returncode != 0, "expected the run to be killed"
     assert losses(read_trace(run_dir)) == expected[: len(losses(read_trace(run_dir)))]
 
@@ -118,6 +128,9 @@ def test_state_comes_back_exactly(framework_workspace, script):
     assert start > 0, "the resumed run started over instead of resuming"
     assert after == expected[start : start + len(after)], (
         f"diverged after rejoining at step {start + 1}"
+    )
+    assert start + len(after) == TOTAL_STEPS, (
+        f"resumed at step {start} and trained {len(after)} steps of {TOTAL_STEPS}"
     )
 
 

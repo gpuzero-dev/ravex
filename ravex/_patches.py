@@ -36,12 +36,18 @@ What gets patched, and why that specific hook:
     ``__init__`` swaps in the position-tracking sampler; ``__iter__`` is where
     resume is triggered, because it is the last moment before the first batch
     is drawn at which the model, the optimizer and the dataloader all exist.
+
+Accelerate's ``DataLoaderShard.__iter__`` / ``DataLoaderDispatcher.__iter__``
+    Patched at the first ``DataLoader`` built once Accelerate is imported.
+    They read one batch ahead of the loop, so the batch boundaries are taken
+    on their iterator rather than on the ``DataLoader`` inside (GPU-519).
 """
 
 from __future__ import annotations
 
 import functools
 import logging
+import sys
 from typing import Any, Callable, List, Tuple
 
 from ravex._resume import stops_the_run
@@ -284,6 +290,9 @@ def _patch_dataloader(patches: PatchSet, registry, runtime, torch) -> None:
     def on_init(loader, _result):
         attach_tracker(loader, getattr(runtime, "config", None))
         registry.register_dataloader(loader)
+        # Here rather than at install: a loader Accelerate builds means
+        # Accelerate is imported by now, whenever the script imported it.
+        _patch_accelerate_lookahead(patches, patched_iter, boundary)
 
     patches.apply(
         dataloader_cls, "__init__", _wrap(dataloader_cls.__init__, on_init)
@@ -291,10 +300,19 @@ def _patch_dataloader(patches: PatchSet, registry, runtime, torch) -> None:
 
     original_iter = dataloader_cls.__iter__
 
-    @functools.wraps(original_iter)
-    def patched_iter(self):
+    def after_iterator_exists():
+        # Deliberately after the iterator exists: building it draws the worker
+        # base seed from the global RNG, and the restored state has to land on
+        # the far side of that draw to match the run being continued.
         try:
-            runtime.on_dataloader_iter(self)
+            runtime.after_dataloader_iter()
+        except Exception as exc:
+            logger.warning("Could not restore the RNG state: %s", exc)
+
+    def boundary(loader, make_iterator, after_iterator=True):
+        """``make_iterator()``, wrapped so the loop's batches are the boundaries."""
+        try:
+            runtime.on_dataloader_iter(loader)
             if runtime.should_stop():
                 # Budget spent. An empty epoch lets the user's loop unwind by
                 # itself, which is gentler than raising through their code.
@@ -305,24 +323,77 @@ def _patch_dataloader(patches: PatchSet, registry, runtime, torch) -> None:
                 raise
             logger.warning("Resume hook failed: %s", exc)
 
-        iterator = original_iter(self)
-
-        # Deliberately after the iterator exists: building it draws the worker
-        # base seed from the global RNG, and the restored state has to land on
-        # the far side of that draw to match the run being continued.
+        iterator = make_iterator()
+        if after_iterator:
+            after_iterator_exists()
         try:
-            runtime.after_dataloader_iter()
             return _BatchBoundaryIterator(
                 iterator,
                 runtime,
-                getattr(self, "_ravex_sampler", None),
-                restart=lambda loader=self: original_iter(loader),
+                getattr(loader, "_ravex_sampler", None),
+                restart=make_iterator,
             )
         except Exception as exc:
             logger.warning("Could not wrap the dataloader iterator: %s", exc)
             return iterator
 
+    @functools.wraps(original_iter)
+    def patched_iter(self):
+        if self.__dict__.get("_ravex_behind_lookahead"):
+            # The loader reading ahead of this one holds the boundaries; see
+            # `_patch_accelerate_lookahead`.
+            iterator = original_iter(self)
+            after_iterator_exists()
+            return iterator
+        return boundary(self, lambda: original_iter(self))
+
     patches.apply(dataloader_cls, "__iter__", patched_iter)
+
+
+#: Accelerate's loaders that read one batch ahead of the loop, to know which
+#: batch is the last before yielding it.
+_LOOKAHEAD_LOADERS = ("DataLoaderShard", "DataLoaderDispatcher")
+
+
+def _patch_accelerate_lookahead(patches: PatchSet, dataloader_iter, boundary) -> None:
+    """Take the batch boundaries where the loop takes batches, under Accelerate.
+
+    ``DataLoaderShard``, what HuggingFace ``Trainer`` iterates, is not a
+    ``DataLoader``: it wraps one, its ``base_dataloader``, and fetches batch
+    ``n + 1`` before it yields batch ``n``. Counted on the inner loader, a
+    checkpoint taken mid-epoch recorded one batch more than the loop had
+    trained, so a resume skipped one batch too many and every batch after it
+    was off by one; and the step budget, enforced on the inner fetch, let the
+    batch already in hand through as one step too many. Measured on
+    2026-11-25 with a run killed at step 14 and checkpointed at 12: it
+    fast-forwarded 5 batches instead of 4 and trained 29 steps instead of 28.
+    A checkpoint on an epoch boundary hid it, because there the fetch that
+    fails holds nothing.
+
+    So the boundary iterator wraps the Accelerate loader's own iterator, and
+    the inner loader is iterated bare. Only when the inner loader goes through
+    the patched ``DataLoader.__iter__``, which is where the RNG restore
+    happens: a ``StatefulDataLoader`` overrides it, and is left as it was.
+    """
+    module = sys.modules.get("accelerate.data_loader")
+    if module is None:
+        return
+    for name in _LOOKAHEAD_LOADERS:
+        cls = getattr(module, name, None)
+        if cls is None or getattr(cls.__iter__, "_ravex_lookahead", False):
+            continue
+        original = cls.__iter__
+
+        @functools.wraps(original)
+        def outer_iter(self, original=original):
+            base = getattr(self, "base_dataloader", None)
+            if base is None or type(base).__iter__ is not dataloader_iter:
+                return original(self)
+            base.__dict__["_ravex_behind_lookahead"] = True
+            return boundary(base, lambda: original(self), after_iterator=False)
+
+        setattr(outer_iter, "_ravex_lookahead", True)
+        patches.apply(cls, "__iter__", outer_iter)
 
 
 class _BatchBoundaryIterator:

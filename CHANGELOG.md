@@ -41,6 +41,21 @@
   moments of every node agreeing on it, so a start lost about that long on
   every node but the source. It asks every 0.05 s.
 
+### Fixed
+
+- **HuggingFace `Trainer` resumes exactly from a checkpoint in the middle
+  of an epoch (GPU-519).** Accelerate's `DataLoaderShard`, the loader that
+  `Trainer` iterates, fetches one batch before it yields the previous one.
+  Ravex counted the batches on the `DataLoader` underneath it, so every
+  checkpoint taken mid-epoch recorded one batch more than the loop had
+  trained. A resume then skipped that batch, and every later batch was off
+  by one. The step budget let the batch already fetched through as one step
+  too many. A run killed at step 14 and resumed from 12 fast-forwarded 5
+  batches instead of 4 and trained 29 steps instead of 28. Ravex now counts
+  the batches on Accelerate's loader. A checkpoint on an epoch boundary was
+  never affected, which is why the test, always killed there, did not catch
+  this. It now also kills mid-epoch.
+
 ## 0.16.2 — 2026-11-25
 
 ### Fixed
