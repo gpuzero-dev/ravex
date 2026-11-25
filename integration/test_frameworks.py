@@ -78,8 +78,8 @@ def test_ravex_intercepts_the_framework_at_all(framework_workspace, script):
     log = (directory / "ravex.log").read_text()
     assert "Ravex active" in log
 
-    written = sorted((directory / "checkpoints").glob("step_*.pt"))
-    assert len(written) > 1, (
+    # Counted from the log, not the files, so it holds for every backend.
+    assert log.count("Checkpoint at step") > 1, (
         "expected periodic checkpoints, not just one at exit - the framework's "
         "dataloader or optimizer wrapper is bypassing the batch-boundary hook\n"
         + log

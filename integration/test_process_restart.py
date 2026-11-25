@@ -8,17 +8,15 @@ find its way back purely from what is on disk.
 
 import pytest
 
-from conftest import read_trace, run_training
+from conftest import read_trace, resume_from, run_training
 
 TOTAL_STEPS = 40
 CHECKPOINT_EVERY = 4
 CRASH_AT = 20
 
-#: A hard kill loses everything after the last checkpoint that was actually
-#: collected. The one due at step 20 would have been taken at the top of
-#: iteration 21, which never ran — so step 16 is the recovery point and the
-#: resumed run replays 17-20 before reaching new ground.
-RESUME_FROM = 17
+# A hard kill loses everything after the last checkpoint that was actually
+# collected; where that is depends on the backend, so the tests read it back
+# with resume_from rather than assume torch_save's step 16.
 
 
 def losses(trace):
@@ -88,13 +86,13 @@ def test_a_killed_run_resumes_where_it_stopped(workspace):
     assert restarted.returncode == 0, restarted.stderr
 
     after = losses(read_trace(run, "trace2.jsonl"))
-    assert after == expected[RESUME_FROM - 1 :], (
+    assert after == expected[resume_from(run) - 1 :], (
         "the resumed run must reproduce the tail of the uninterrupted one"
     )
 
     # And the budget is global, not per-process: 40 steps total across both
     # runs plus the replayed overlap, never 40 more.
-    assert len(before) + len(after) == TOTAL_STEPS + (CRASH_AT - RESUME_FROM + 1)
+    assert len(before) + len(after) == TOTAL_STEPS + (CRASH_AT - resume_from(run) + 1)
 
 
 def test_the_learning_rate_survives_the_restart(workspace):
@@ -109,7 +107,7 @@ def test_the_learning_rate_survives_the_restart(workspace):
 
     # StepLR decays at steps 10, 20, 30, 40. A resume that restored the model
     # but not the scheduler would restart the decay schedule from zero here.
-    assert after == expected[RESUME_FROM - 1 :]
+    assert after == expected[resume_from(run) - 1 :]
 
 
 @pytest.mark.parametrize("workers", [2])
@@ -129,4 +127,4 @@ def test_resume_is_exact_with_dataloader_workers(workspace, workers):
     assert run_training(run, trace_name="trace2.jsonl", workers=workers).returncode == 0
 
     after = losses(read_trace(run, "trace2.jsonl"))
-    assert after == expected[RESUME_FROM - 1 :]
+    assert after == expected[resume_from(run) - 1 :]

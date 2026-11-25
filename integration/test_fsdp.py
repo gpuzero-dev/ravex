@@ -13,27 +13,19 @@ parameters against a wrapper class — but from that point on both go through th
 same code.
 """
 
-import glob
 import subprocess
 import sys
 
 import pytest
 import torch
 
-from conftest import SCRIPTS, read_trace
+from conftest import BACKEND, SCRIPTS, latest_checkpoint, read_trace, resume_from
 from test_ddp import torchrun
 
 pytest.importorskip("torch.distributed.fsdp", reason="no FSDP in this torch")
 
 TOTAL_STEPS = 40
 CRASH_AT = 20
-RESUME_FROM = 17
-
-
-def latest_checkpoint(directory):
-    files = sorted(glob.glob(str(directory / "checkpoints" / "step_*.pt")))
-    assert files, "no checkpoint was written"
-    return torch.load(files[-1], map_location="cpu", weights_only=False)
 
 
 def losses(trace):
@@ -83,7 +75,7 @@ def test_a_killed_fsdp_run_resumes_on_every_rank(fsdp_workspace):
     assert restarted.returncode == 0, restarted.stderr
 
     after = losses(read_trace(run, "trace2.jsonl"))
-    assert after == expected[RESUME_FROM - 1 :], (
+    assert after == expected[resume_from(run) - 1 :], (
         "a resumed sharded run must reproduce the uninterrupted one exactly"
     )
 
@@ -166,9 +158,9 @@ def per_rank_workspace(workspace):
 
 
 def rank_checkpoint(directory, rank):
-    files = sorted(glob.glob(str(directory / "checkpoints" / f"rank_{rank}" / "step_*.pt")))
-    assert files, f"rank {rank} wrote no checkpoint"
-    return torch.load(files[-1], map_location="cpu", weights_only=False)
+    state = latest_checkpoint(directory, rank)
+    assert state, f"rank {rank} wrote no checkpoint"
+    return state
 
 
 def test_every_rank_writes_its_own_shard_to_its_own_store(per_rank_workspace):
@@ -193,7 +185,7 @@ def test_every_rank_writes_its_own_shard_to_its_own_store(per_rank_workspace):
 
     # Nothing gathered means nothing for one rank to hold on behalf of the
     # others: two stores, not one shared one.
-    assert not glob.glob(str(directory / "checkpoints" / "step_*.pt"))
+    assert latest_checkpoint(directory) is None
 
 
 def test_a_killed_per_rank_run_resumes_on_every_rank(per_rank_workspace):
@@ -211,7 +203,7 @@ def test_a_killed_per_rank_run_resumes_on_every_rank(per_rank_workspace):
     assert restarted.returncode == 0, restarted.stderr
 
     after = losses(read_trace(run, "trace2.jsonl"))
-    assert after == expected[RESUME_FROM - 1 :], (
+    assert after == expected[resume_from(run) - 1 :], (
         "a resumed per-rank run must reproduce the uninterrupted one exactly — "
         "each rank puts back its own shard, and together they have to be the "
         "same model the gathered path would have restored"
@@ -258,6 +250,8 @@ def test_an_fsdp_checkpoint_loads_into_a_plain_model(fsdp_workspace):
             str(SCRIPTS / "load_checkpoint.py"),
             "--checkpoints",
             str(directory / "checkpoints"),
+            "--backend",
+            BACKEND,
         ],
         cwd=directory,
         capture_output=True,

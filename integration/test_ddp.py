@@ -15,11 +15,10 @@ import sys
 
 import pytest
 
-from conftest import SCRIPTS, read_trace
+from conftest import BACKEND, SCRIPTS, latest_checkpoint, read_trace, resume_from
 
 TOTAL_STEPS = 40
 CRASH_AT = 20
-RESUME_FROM = 17  # see test_process_restart for how this falls out
 
 
 def torchrun(directory, script, trace_name="trace.jsonl", ranks=2, **script_args):
@@ -66,8 +65,7 @@ def test_two_ranks_train_and_only_rank_zero_writes(ddp_workspace):
     assert result.returncode == 0, result.stderr
     assert "rank 0 done" in result.stdout and "rank 1 done" in result.stdout
 
-    checkpoints = sorted((directory / "checkpoints").glob("step_*.pt"))
-    assert checkpoints, "rank 0 should have written checkpoints"
+    assert latest_checkpoint(directory), "rank 0 should have written checkpoints"
 
     log = (directory / "ravex.log").read_text()
     # Both ranks run the runtime — rank 1 has to resume even though it never
@@ -102,7 +100,7 @@ def test_a_killed_ddp_run_resumes_on_every_rank(ddp_workspace):
     # Exact equality here is the strong claim: it means rank 1 resumed too. A
     # rank that restarted from fresh weights would poison the all-reduce and
     # every loss after the first step would differ.
-    assert after == expected[RESUME_FROM - 1 :]
+    assert after == expected[resume_from(run) - 1 :]
 
 
 def test_a_ddp_checkpoint_loads_into_a_plain_model(ddp_workspace):
@@ -115,6 +113,8 @@ def test_a_ddp_checkpoint_loads_into_a_plain_model(ddp_workspace):
             str(SCRIPTS / "load_checkpoint.py"),
             "--checkpoints",
             str(directory / "checkpoints"),
+            "--backend",
+            BACKEND,
         ],
         cwd=directory,
         capture_output=True,

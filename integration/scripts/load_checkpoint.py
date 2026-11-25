@@ -9,8 +9,6 @@ Prints OK on success so a test can assert on it.
 """
 
 import argparse
-import glob
-import os
 
 import torch
 import torch.nn as nn
@@ -19,13 +17,14 @@ import torch.nn as nn
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--checkpoints", required=True)
+    parser.add_argument("--backend", default="torch_save")
     args = parser.parse_args()
 
-    files = sorted(glob.glob(os.path.join(args.checkpoints, "step_*.pt")))
-    if not files:
-        raise SystemExit("no checkpoint found")
+    # Ravex's own reader, the one `ravex export` uses, so any backend's store
+    # loads here; the plain model below is what has to stay free of Ravex.
+    from ravex._interop.export import load_store
 
-    state = torch.load(files[-1], map_location="cpu", weights_only=False)
+    state = load_store(args.checkpoints, backend=args.backend)
 
     # DDP stores the model under "models"; FSDP under "sharded", already
     # gathered. Either way what comes out has to be an ordinary state dict.

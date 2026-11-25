@@ -31,7 +31,7 @@ import sys
 import pytest
 import torch
 
-from conftest import SCRIPTS, read_trace
+from conftest import SCRIPTS, latest_checkpoint, read_trace, resume_from
 from test_ddp import torchrun
 
 pytestmark = pytest.mark.skipif(
@@ -40,7 +40,6 @@ pytestmark = pytest.mark.skipif(
 
 TOTAL_STEPS = 40
 CRASH_AT = 20
-RESUME_FROM = 17
 
 #: Makes cuBLAS pick a deterministic algorithm. Has to be set before CUDA
 #: initialises, so it goes in the child's environment.
@@ -142,12 +141,12 @@ def test_amp_resumes_with_the_same_losses_and_loss_scale(gpu_workspace):
     after = stepped(read_trace(run, "trace2.jsonl"))
 
     # Single GPU, no collectives: this can and must be exact.
-    assert_matches(after, expected, RESUME_FROM, exact=True)
+    assert_matches(after, expected, resume_from(run), exact=True)
 
     # The loss scale is tuned state. A resume that reset it to init_scale would
     # spend the next few hundred steps overflowing its way back to where it was.
-    for offset, (got, want) in enumerate(zip(after, expected[RESUME_FROM - 1 :])):
-        assert got["scale"] == want["scale"], f"scale at step {RESUME_FROM + offset}"
+    for offset, (got, want) in enumerate(zip(after, expected[resume_from(run) - 1 :])):
+        assert got["scale"] == want["scale"], f"scale at step {resume_from(run) + offset}"
 
 
 def test_the_cuda_rng_state_is_restored(gpu_workspace):
@@ -166,10 +165,10 @@ def test_the_cuda_rng_state_is_restored(gpu_workspace):
     assert run_single(run, trace_name="trace2.jsonl", mode="amp").returncode == 0
     after = stepped(read_trace(run, "trace2.jsonl"))
 
-    assert after[0]["loss"] == expected[RESUME_FROM - 1]["loss"], (
+    assert after[0]["loss"] == expected[resume_from(run) - 1]["loss"], (
         "the first resumed step already differs"
     )
-    assert_matches(after, expected, RESUME_FROM, exact=True)
+    assert_matches(after, expected, resume_from(run), exact=True)
 
 
 # --- FSDP1 and NCCL -------------------------------------------------
@@ -181,11 +180,8 @@ def test_fsdp1_state_is_gathered_whole(gpu_workspace):
     result = torchrun(directory, "train_cuda.py", epochs=3, mode="fsdp1")
     assert result.returncode == 0, result.stderr
 
-    import glob
-
-    files = sorted(glob.glob(str(directory / "checkpoints" / "step_*.pt")))
-    assert files
-    state = torch.load(files[-1], map_location="cpu", weights_only=False)
+    state = latest_checkpoint(directory)
+    assert state
 
     assert state["sharded"], "FSDP1 should be recognised through its wrapper"
     assert not state["models"]
@@ -212,7 +208,7 @@ def test_a_killed_fsdp1_run_resumes_on_every_rank(gpu_workspace):
     assert restarted.returncode == 0, restarted.stderr
 
     after = stepped(read_trace(run, "trace2.jsonl"))
-    assert_matches(after, expected, RESUME_FROM, exact=False)
+    assert_matches(after, expected, resume_from(run), exact=False)
 
 
 def test_bfloat16_weights_survive_a_restart(gpu_workspace):
@@ -235,7 +231,7 @@ def test_bfloat16_weights_survive_a_restart(gpu_workspace):
     assert restarted.returncode == 0, restarted.stderr
 
     after = stepped(read_trace(run, "trace2.jsonl"))
-    assert_matches(after, expected, RESUME_FROM, exact=True)
+    assert_matches(after, expected, resume_from(run), exact=True)
 
 
 def test_a_run_sharded_over_every_gpu_resumes_on_one_process(gpu_workspace):
@@ -254,11 +250,8 @@ def test_a_run_sharded_over_every_gpu_resumes_on_one_process(gpu_workspace):
     killed = torchrun(directory, "train_cuda.py", ranks=ranks, mode="fsdp1", die_at=CRASH_AT)
     assert killed.returncode != 0, "expected the sharded run to be killed"
 
-    import glob
-
-    files = sorted(glob.glob(str(directory / "checkpoints" / "step_*.pt")))
-    assert files, "the sharded run wrote nothing"
-    saved = torch.load(files[-1], map_location="cpu", weights_only=False)
+    saved = latest_checkpoint(directory)
+    assert saved, "the sharded run wrote nothing"
     group = saved["sharded"]["sharded_0"]["model"]
 
     plain = subprocess.run(
@@ -297,4 +290,4 @@ def test_ddp_over_nccl_resumes(gpu_workspace):
     assert restarted.returncode == 0, restarted.stderr
 
     after = stepped(read_trace(run, "trace2.jsonl"))
-    assert_matches(after, expected, RESUME_FROM, exact=False)
+    assert_matches(after, expected, resume_from(run), exact=False)
