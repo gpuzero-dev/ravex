@@ -1087,6 +1087,18 @@ class RavexRuntime:
         # state overwrote that update, the step was counted anyway, and the
         # batch it should have trained on never was (GPU-275).
         self.resume_if_ready()
+        # The outer loop at the top of the first iteration, before any step
+        # (GPU-213). Built at the first `optimizer.step()` instead, each node
+        # had already trained one step on its own data, so no two held the
+        # same parameters at the seed round: the source's state always had to
+        # be downloaded - 40 s for 0.5 GB on a RunPod private network, the
+        # source training meanwhile - even when every node had built the same
+        # model from the same seed. Here they hold what they built, and a node
+        # whose state matches the source's skips the download
+        # (`adopt_run_state`). A model registered later is taken at its first
+        # step, as before.
+        if self.config.outer_loop and self._outer is None and self.registry.models:
+            self._outer_loop()
         # Whoever delivered it - a dataloader, the script, a forward - the
         # iteration's top has been taken, and the forward hook stands down
         # until the next step.

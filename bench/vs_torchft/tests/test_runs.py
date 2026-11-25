@@ -129,6 +129,12 @@ def test_phase_a_in_small_two_nodes_per_system_three_rounds_each(tmp_path):
         # Both nodes report all three rounds, each over both nodes.
         assert sorted((e["node"], e["round"], e["nodes"]) for e in rounds) == [
             (n, r, 2) for n in (0, 1) for r in (1, 2, 3)], rounds
+    # Both Ravex nodes build the same model from the same seed, so the one
+    # that is not the source holds the starting state already and downloads
+    # nothing (GPU-213): the outer loop is built before the first step.
+    said = "".join(open(os.path.join(results, "ravex", node, "ravex.log")).read()
+                   for node in ("node0", "node1"))
+    assert "nothing to download" in said, logs(results)
 
 
 def test_each_system_with_and_without_a_checkpoint(tmp_path):
