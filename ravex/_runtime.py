@@ -208,6 +208,9 @@ class RavexRuntime:
         #: last checkpoint, and the last step this rank saved by it (GPU-520).
         #: See `_follow_rank_zero`.
         self._rank_zero_every: Optional[int] = None
+        #: Shard 0's job as `_inner_steps_road` reached it: the address, the
+        #: store and its incarnation (GPU-213).
+        self._shard_zero_road: Optional[Tuple[str, Any, bytes]] = None
         self._followed_save: Optional[int] = None
         #: Where the outer loop's state is saved, once a round (GPU-212). See
         #: `_outer_store_backend`.
@@ -1735,10 +1738,10 @@ class RavexRuntime:
 
         The processes of a node train one model between them, so every one has
         to close its round at the same step, and each closes it in a run of its
-        own. A round counted in steps does: the processes take the same steps.
-        On the clock, or with H moved by each run's own measurements, they
-        would close at different steps and the node would hold shards of
-        different rounds.
+        own. A round counted in steps does: the processes take the same steps,
+        and an automatic H is decided once for all of them, on shard 0's job
+        (`_inner_steps_road`). On the clock they would close at different steps
+        and the node would hold shards of different rounds.
 
         And every process of a node has to be the same node in its run, or the
         seed round would put together shards of different nodes' starting
@@ -1755,8 +1758,6 @@ class RavexRuntime:
         reasons = []
         if self.config.outer_round_seconds:
             reasons.append("outer_round_seconds closes rounds on each process's clock")
-        if self.config.outer_auto_steps:
-            reasons.append("outer_auto_steps moves H by each shard's own measurements")
         if self.config.outer_member is None:
             reasons.append(
                 "outer_member (RAVEX_OUTER_MEMBER) is not set, and every process of a "
@@ -2924,9 +2925,10 @@ class RavexRuntime:
                 ceiling=ceiling,
             )
         try:
+            store, scope = self._inner_steps_road(exchange)
             decided = decide_inner_steps(
-                exchange.store,
-                exchange.scope_base or exchange.scope,
+                store,
+                scope,
                 int(report["round"]),
                 int(exchange.rank),
                 proposal,
@@ -2955,6 +2957,42 @@ class RavexRuntime:
                 float(seconds),
                 100.0 * self.config.network_share,
             )
+
+    def _inner_steps_road(self, exchange):
+        """``(store, scope)`` H is decided on: this run's, or shard 0's (GPU-213).
+
+        The processes of an HSDP node each run in a job of their own, and the
+        processes of a node have to close their rounds at the same step. Decided
+        on each job's own keys, shard 1 could take another H than shard 0 and
+        the node would hold shards of different rounds. So every shard decides
+        on shard 0's job, under its key for the round: the first proposal of
+        any process of any node is the H of all of them, with no collective
+        between the processes of a node, which with `outer_overlap` land a
+        round at different steps.
+        """
+        shard = self._node_shard()
+        if shard is None or shard[0] == 0:
+            return exchange.store, exchange.scope_base or exchange.scope
+        # shortcut: after a failover, shard 0's job on the new server may hold
+        # no incarnation, and then this shard keeps its H with a warning
+        # (`_decide_inner_steps`); failover under HSDP is untested.
+        address = self._rendezvous_at
+        if self._shard_zero_road is None or self._shard_zero_road[0] != address:
+            from ravex._dist import rendezvous as _rendezvous
+            from ravex._dist.replication import RingLink
+
+            patience = float(self.config.outer_deadline)
+            store = _rendezvous.connect(address, self.config.outer_job + ".shard0", timeout=patience)
+            # Read, never written: rank 0 of shard 0's job makes it, and a
+            # process of another shard that wrote it would start a new life of
+            # that job under its peers.
+            deadline = time.monotonic() + patience
+            while not store.check([RingLink.INCARNATION_KEY]):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("shard 0's job has no incarnation on the rendezvous yet")
+                time.sleep(0.05)
+            self._shard_zero_road = (address, store, store.get(RingLink.INCARNATION_KEY))
+        return self._shard_zero_road[1], self._shard_zero_road[2]
 
     def _write_model_series(self, report: Dict[str, Any], seconds: float) -> None:
         """Log the round as a point on the model's series (GPU-135).

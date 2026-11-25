@@ -51,7 +51,6 @@ def test_without_a_rendezvous_the_process_group_is_the_run(monkeypatch):
     "setting, words",
     [
         ({"outer_round_seconds": 30.0}, "outer_round_seconds"),
-        ({"outer_auto_steps": True}, "outer_auto_steps"),
         ({"outer_member": None}, "outer_member"),
     ],
 )
@@ -63,6 +62,58 @@ def test_shards_that_could_not_close_rounds_together_are_refused(monkeypatch, se
 
 def test_rounds_in_steps_with_a_node_number_pass(monkeypatch):
     _process(monkeypatch)._check_node_shards()
+    _process(monkeypatch, outer_auto_steps=True)._check_node_shards()
+
+
+class _Exchange:
+    store = "own store"
+    scope_base = b"own life"
+    scope = b"own life/namespace"
+
+
+class _ShardZeroJob:
+    """Shard 0's job on the rendezvous, as another shard reaches it."""
+
+    def __init__(self):
+        self.written = []
+
+    def check(self, keys):
+        return True
+
+    def get(self, key):
+        return b"shard zero's life"
+
+    def set(self, key, value):
+        self.written.append(key)
+
+
+def test_shard_zero_decides_h_on_its_own_job(monkeypatch):
+    runtime = _process(monkeypatch, rank=0)
+    assert runtime._inner_steps_road(_Exchange()) == ("own store", b"own life")
+
+
+def test_the_other_shards_decide_h_on_shard_zero_s_job(monkeypatch):
+    """Every shard proposes on the same key, so every process takes the same
+    H, and no shard ever writes shard 0's incarnation."""
+    from ravex._dist import rendezvous
+
+    job = _ShardZeroJob()
+    reached = []
+    monkeypatch.setattr(
+        rendezvous, "connect", lambda address, name, timeout: reached.append((address, name)) or job
+    )
+    runtime = _process(monkeypatch, rank=1)
+    runtime._rendezvous_at = "10.0.0.1:29400"
+    store, scope = runtime._inner_steps_road(_Exchange())
+    assert store is job and scope == b"shard zero's life"
+    assert reached == [("10.0.0.1:29400", "run.shard0")]
+    assert job.written == []
+
+    runtime._inner_steps_road(_Exchange())
+    assert len(reached) == 1, "reached again for every round"
+    runtime._rendezvous_at = "10.0.0.2:29400"
+    runtime._inner_steps_road(_Exchange())
+    assert reached[-1][0] == "10.0.0.2:29400", "a failover's new server was not followed"
 
 
 class _Sharded(torch.nn.Parameter):

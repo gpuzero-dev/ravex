@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **An HSDP node takes an automatic H (GPU-213).** `outer_auto_steps` was
+  refused on a node of several processes, because each shard's run measured
+  and decided its own H and a node could end up holding shards of different
+  rounds. Every shard now decides H on shard 0's job, under the same key for
+  the round: the first proposal of any process of any node is everyone's H,
+  with no collective between the processes of a node. `outer_overlap` works
+  across shards as it is, each landing its own round, and is now tested
+  there. `outer_round_seconds` is still refused, since a clock is per process.
+
 ## 0.17.0 — 2026-11-26
 
 ### Added
