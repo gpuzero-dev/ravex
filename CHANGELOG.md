@@ -43,6 +43,16 @@
 
 ### Fixed
 
+- **The ranks of a sharded run save at the same steps between two
+  checkpoints (GPU-520).** Each rank has its own Moonclip, and each one's
+  steps between saves follow how busy its own writer was. In a gathered run
+  only rank 0 writes, so rank 1 came down to a save at every step while rank
+  0 did not, entered a save alone and waited in a collective until NCCL's
+  watchdog killed both ranks: found on two RTX 5080 with FSDP1 resumed from a
+  step between two checkpoints. Rank 0's Moonclip now decides: at each
+  checkpoint it hands its number to the other ranks, which follow Moonclip's
+  rule with it until the next one. One small collective per checkpoint.
+
 - **HuggingFace `Trainer` resumes exactly from a checkpoint in the middle
   of an epoch (GPU-519).** Accelerate's `DataLoaderShard`, the loader that
   `Trainer` iterates, fetches one batch before it yields the previous one.

@@ -204,6 +204,11 @@ class RavexRuntime:
         self._enabled = self.config.enabled
         self._patches = None
         self._backend = None
+        #: Rank 0's steps between two saves in a window, as it said at the
+        #: last checkpoint, and the last step this rank saved by it (GPU-520).
+        #: See `_follow_rank_zero`.
+        self._rank_zero_every: Optional[int] = None
+        self._followed_save: Optional[int] = None
         #: Where the outer loop's state is saved, once a round (GPU-212). See
         #: `_outer_store_backend`.
         self._outer_store = None
@@ -898,8 +903,63 @@ class RavexRuntime:
         first window either.
         """
         if self._backend is not None and self._saves_every_step():
+            if self._saves_together() and get_rank() != 0:
+                return self._follow_rank_zero(step)
             return self._backend.wants(step)
         return step % self.config.checkpoint_every == 0
+
+    def _saves_together(self) -> bool:
+        """Whether a save here is a collective every rank has to enter.
+
+        A sharded model over several ranks: collecting is a gather, and the
+        save ends on a verdict all of them take. Replicated ranks other than 0
+        leave `checkpoint` at its first lines, so whatever they decide costs
+        nothing.
+        """
+        return get_world_size() > 1 and self.registry.has_sharded_models()
+
+    def _follow_rank_zero(self, step: int) -> bool:
+        """Moonclip's rule for the saves of a window, with rank 0's numbers (GPU-520).
+
+        Every rank has a Moonclip of its own, and each one's ``every`` follows
+        how busy *its* writer was. In a gathered run only rank 0 writes, so
+        rank 1 measured an idle writer and came down to a save at every step
+        while rank 0 did not: on two RTX 5080 rank 1 entered a checkpoint at a
+        step rank 0 went on to the next forward, and the two sat in different
+        collectives until NCCL's watchdog killed both, ten minutes later.
+
+        So rank 0 decides, and says so at each checkpoint (see
+        `_share_cadence`): a checkpoint is saved, and between two a step is
+        saved once ``every`` steps have passed since the last save - the same
+        rule as `moonclip/src/cadence.rs`, which is what keeps the two in step.
+        Until rank 0 has spoken, ``every`` is the window, as a fresh Moonclip's
+        is: nothing but checkpoints.
+        """
+        every = self._rank_zero_every or self.config.checkpoint_every
+        due = self._is_checkpoint_step(step) or (
+            self._followed_save is not None and step >= self._followed_save + every
+        )
+        if due:
+            self._followed_save = step
+        return due
+
+    def _share_cadence(self) -> None:
+        """Hand rank 0's ``every`` to the other ranks, at a checkpoint (GPU-520).
+
+        Rank 0's Moonclip closed the window and chose the next ``every`` when
+        it was asked about this checkpoint's step, so what it says here is the
+        number for the steps up to the next checkpoint. One small collective
+        per checkpoint, where the ranks already meet, rather than one per
+        step to agree on each save.
+        """
+        from ravex._dist.collectives import _broadcast_object, _dist
+
+        mine = None
+        if get_rank() == 0 and self._backend is not None:
+            mine = self._backend.cadence()
+        every = _broadcast_object(_dist(), mine, src=0)
+        if get_rank() != 0:
+            self._rank_zero_every = every
 
     def _is_checkpoint_step(self, step: int) -> bool:
         """Whether ``step`` is a checkpoint, and not one of the deltas between."""
@@ -3614,6 +3674,10 @@ class RavexRuntime:
         # So the verdict is taken once, by everyone, and everyone acts on it.
         if sharded and get_world_size() > 1:
             ok = all_ranks_agree(ok)
+            # Past the verdict every rank of this save is here, whatever it
+            # says, so this is where the ranks agree on the saves to come too.
+            if not final and self._is_checkpoint_step(step) and self._saves_every_step():
+                self._share_cadence()
 
         if not ok:
             if not self.config.fallback_on_error:
