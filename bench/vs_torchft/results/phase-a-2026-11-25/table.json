@@ -1,0 +1,98 @@
+[
+  {
+    "arm": "ravex",
+    "tokens_per_step": 16384,
+    "rounds": 6,
+    "committed_tokens": 98304000,
+    "initial_loss": 11.00609239935875,
+    "final_loss": 4.739181756973267,
+    "tokens_per_s": 104015.90975817312,
+    "node_tokens_per_s": {
+      "0": 75941.0766196302,
+      "1": 75771.70851664641
+    },
+    "wasted_steps": 0,
+    "lost_per_kill": [],
+    "join_seconds": [],
+    "node_seconds": 2498.5089132785797,
+    "cost": 0.5066420851926009,
+    "usd_per_mtok": 0.005153829805426034,
+    "checksum_spread": 0.0,
+    "first_losses": {
+      "0": 11.00386118888855,
+      "1": 10.996591091156006
+    }
+  },
+  {
+    "arm": "ravex-lean",
+    "tokens_per_step": 16384,
+    "rounds": 6,
+    "committed_tokens": 98304000,
+    "initial_loss": 11.00609239935875,
+    "final_loss": 4.751166895031929,
+    "tokens_per_s": 104500.04195633106,
+    "node_tokens_per_s": {
+      "0": 75975.73343771292,
+      "1": 75746.61137072244
+    },
+    "wasted_steps": 0,
+    "lost_per_kill": [],
+    "join_seconds": [],
+    "node_seconds": 2489.4373726844788,
+    "cost": 0.5048025783499082,
+    "usd_per_mtok": 0.0051351173741649185,
+    "checksum_spread": 0.0,
+    "first_losses": {
+      "0": 10.992872476577759,
+      "1": 11.024351596832275
+    }
+  },
+  {
+    "arm": "torchft",
+    "tokens_per_step": 16384,
+    "rounds": 6,
+    "committed_tokens": 98304000,
+    "initial_loss": 11.00609239935875,
+    "final_loss": 4.738228589296341,
+    "tokens_per_s": 108559.16959950257,
+    "node_tokens_per_s": {
+      "0": 76225.90296189979,
+      "1": 76087.82234338784
+    },
+    "wasted_steps": 0,
+    "lost_per_kill": [],
+    "join_seconds": [],
+    "node_seconds": 2412.4659583568573,
+    "cost": 0.48919448600014054,
+    "usd_per_mtok": 0.004976343648276169,
+    "checksum_spread": 0.0,
+    "first_losses": {
+      "0": 11.013674020767212,
+      "1": 11.019678354263306
+    }
+  },
+  {
+    "arm": "torchft-ckpt",
+    "tokens_per_step": 16384,
+    "rounds": 6,
+    "committed_tokens": 98304000,
+    "initial_loss": 11.00609239935875,
+    "final_loss": 4.73291689157486,
+    "tokens_per_s": 104498.0331785566,
+    "node_tokens_per_s": {
+      "0": 76269.66376807327,
+      "1": 76109.77448830973
+    },
+    "wasted_steps": 0,
+    "lost_per_kill": [],
+    "join_seconds": [],
+    "node_seconds": 2482.9271795749664,
+    "cost": 0.5034824558582571,
+    "usd_per_mtok": 0.0051216883937404084,
+    "checksum_spread": 0.0,
+    "first_losses": {
+      "0": 11.013674020767212,
+      "1": 11.019678354263306
+    }
+  }
+]

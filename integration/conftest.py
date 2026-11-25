@@ -1,6 +1,7 @@
 import json
 import subprocess
 import sys
+import os
 import textwrap
 from pathlib import Path
 
@@ -46,7 +47,10 @@ def workspace(tmp_path):
         settings = {
             "checkpoint_every": 4,
             "max_steps": 40,
-            "backend": "torch_save",
+            # RAVEX_INTEGRATION_BACKEND=moonclip runs every scenario through
+            # Moonclip, the backend that ships (GPU-213); torch_save, the
+            # default, needs nothing but torch.
+            "backend": os.environ.get("RAVEX_INTEGRATION_BACKEND", "torch_save"),
             "keep_last": 5,
         }
         settings.update(overrides)
