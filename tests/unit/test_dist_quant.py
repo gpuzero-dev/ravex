@@ -166,3 +166,51 @@ def test_error_feedback_carries_what_was_dropped():
     for key in sent:
         assert torch.allclose(carried[key], sent[key] - published[key])
     assert "residual" not in loop.state_dict()
+
+
+@needs_moonclip
+@pytest.mark.parametrize("save_dtype", ["bf16", "fp8_block"])
+def test_error_feedback_loses_nothing_over_the_rounds(tmp_path, save_dtype):
+    """What a shard sends, through Moonclip's own cast, adds up to what it
+    trained (GPU-521).
+
+    Each round the node publishes its delta plus the residual the last cast
+    dropped, and keeps as residual what this cast drops: over T rounds the
+    published deltas sum to the true ones minus the last residual, so nothing
+    is lost, only late by a round. Without the feedback the casts' errors stay
+    in the model. The deltas are one HSDP shard's: plain local tensors, as
+    `trainable` hands them over.
+    """
+    from ravex._dist.outer import OuterLoop
+
+    torch.manual_seed(5)
+    shard = torch.nn.Linear(64, 32)
+    rounds = 20
+    deltas = [
+        {name: torch.randn_like(p) * 1e-3 for name, p in shard.named_parameters()}
+        for _ in range(rounds)
+    ]
+    truth = {name: sum(d[name] for d in deltas) for name in deltas[0]}
+
+    def published_sum(feedback, root):
+        loop = OuterLoop(shard, inner_steps=1)
+        total = {name: torch.zeros_like(v) for name, v in truth.items()}
+        for number, delta in enumerate(deltas, start=1):
+            sent = loop.with_residual(delta) if feedback else delta
+            report.publish_round(str(root), number, sent, 1, "n0", save_dtype=save_dtype)
+            published = report.read_round(str(root), number, report.expectation(sent)).delta
+            if feedback:
+                loop.keep_residual(sent, published)
+            for name in total:
+                total[name] += published[name].float()
+        return total, loop.residual
+
+    fed, residual = published_sum(True, tmp_path / "fed")
+    cast, _ = published_sum(False, tmp_path / "cast")
+    for name, value in truth.items():
+        scale = value.abs().max().item()
+        lost_with_feedback = (fed[name] + residual[name] - value).abs().max().item()
+        lost_without = (cast[name] - value).abs().max().item()
+        # fp32 additions are all that is left: a few ulps of the sum.
+        assert lost_with_feedback <= 1e-6 * scale, (name, lost_with_feedback)
+        assert lost_without > 100 * lost_with_feedback, (name, lost_without, lost_with_feedback)

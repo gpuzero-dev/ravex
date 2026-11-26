@@ -76,8 +76,21 @@ def _run(tmp_path, monkeypatch, **extra):
     return results, logs
 
 
-def test_two_nodes_of_two_shards_end_with_one_model(tmp_path, monkeypatch):
-    results, logs = _run(tmp_path, monkeypatch)
+@pytest.mark.parametrize(
+    "cast",
+    [
+        {},
+        # Each shard's delta cast on the wire, what the cast dropped carried to
+        # the next round (GPU-521). Every node must average the cast of its
+        # own delta, as its peers read it, or the nodes part by a cast's error
+        # per round.
+        {"RAVEX_OUTER_SAVE_DTYPE": "bf16", "RAVEX_OUTER_ERROR_FEEDBACK": "true"},
+        {"RAVEX_OUTER_SAVE_DTYPE": "fp8_block", "RAVEX_OUTER_ERROR_FEEDBACK": "true"},
+    ],
+    ids=["fp32", "bf16-feedback", "fp8-feedback"],
+)
+def test_two_nodes_of_two_shards_end_with_one_model(tmp_path, monkeypatch, cast):
+    results, logs = _run(tmp_path, monkeypatch, **cast)
 
     assert len(results) == 4, results
     by_place = {(r["node"], r["rank"]): r for r in results}
