@@ -55,6 +55,12 @@ ARMS = {
         "RAVEX_OUTER_OVERLAP": "true", "RAVEX_OUTER_AUTO_STEPS": "true",
         "RAVEX_OUTER_SAVE_DTYPE": "fp8_block", "RAVEX_OUTER_ERROR_FEEDBACK": "true",
     },
+    # Blocking rounds with an H that keeps the network at a quarter of the
+    # round: against the overlap arms, what a round late costs the model.
+    "bf16-blocking-auto": {
+        "RAVEX_OUTER_AUTO_STEPS": "true",
+        "RAVEX_OUTER_SAVE_DTYPE": "bf16", "RAVEX_OUTER_ERROR_FEEDBACK": "true",
+    },
 }
 
 
