@@ -209,6 +209,26 @@ def test_a_backend_can_be_asked_for_a_specific_step(tmp_path):
 
 
 @pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
+def test_after_a_resume_to_an_older_step_the_latest_is_the_last_saved(tmp_path):
+    """A pinned step of the history a resume left stays in the store; the
+    latest step is still the one load_latest() restores, the last saved, or a
+    resume and the ranks' agreement go back to the abandoned history (GPU-530)."""
+    from ravex._backends import MoonclipBackend
+
+    backend = MoonclipBackend(make_config(tmp_path, backend="moonclip", full_every=4))
+    for step in (4, 8, 12, 16):
+        backend.save(step, sample_state(step), {"step": str(step)})
+    backend.flush()
+    assert backend.pin(16)
+    # Resumed from 4: the run trains on and saves 8 again.
+    backend.save(8, sample_state(8), {"step": "8"})
+    backend.flush()
+    assert backend.latest_step() == 8
+    assert backend.load_latest()["step"] == 8
+    backend.close()
+
+
+@pytest.mark.skipif(not HAVE_MOONCLIP, reason="moonclip not installed")
 def test_moonclip_can_be_asked_for_a_specific_step(tmp_path):
     """The same question against the default backend, where a snapshot is
     addressed by id and the step is metadata rather than a filename.

@@ -610,7 +610,11 @@ class MoonclipBackend(CheckpointBackend):
             logger.warning("Could not list snapshots: %s", exc)
             return None
         steps = [int(s["step"]) for s in snapshots if s.get("step") is not None]
-        return max(steps) if steps else None
+        # The step load_latest() restores: the last one saved, in the store's
+        # own order, not the largest. After a resume to an older step a pinned
+        # step of the history it left can stay, and the largest would send a
+        # resume, and the ranks' agreement on a step, back to it (GPU-530).
+        return steps[-1] if steps else None
 
     def known_steps(self) -> List[int]:
         try:
