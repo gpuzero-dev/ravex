@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.20.1 — 2026-11-27
+
+### Fixed
+
+- **After a resume from an older step, the latest step is the last one
+  saved (GPU-530).** `latest_step()` returned the largest step in the store:
+  a pinned step of the history a resume left stays there, and a resume, and
+  the ranks' agreement on a step, went back to the abandoned history. It is
+  now the step `load_latest()` restores. Needs moonclip 0.4.2, which drops
+  that history when an older step is saved.
+
 ## 0.20.0 — 2026-11-26
 
 ### Added

@@ -121,7 +121,7 @@ dependencies = ["PyYAML>=5.1"]
 #            sync to R2, which held up the metrics and every later sync.
 #            0.3.8 since GPU-443: an older one held several copies of the
 #            state while saving, and rank 0 of an outer loop ran out of RAM.
-moonclip = ["moonclip>=0.4.0"]
+moonclip = ["moonclip>=0.4.2"]
 dev = ["pytest>=7", "numpy"]
 
 [project.urls]
