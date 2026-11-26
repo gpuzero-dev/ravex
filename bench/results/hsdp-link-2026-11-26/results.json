@@ -1,0 +1,153 @@
+{
+  "args": {
+    "params": "4e6",
+    "hidden": 1024,
+    "steps": 400,
+    "batch": 16,
+    "inner": 40,
+    "min_rounds": 3,
+    "rate": "4mbit",
+    "delay_ms": 50,
+    "arms": "alone,fp32-blocking,fp32-overlap-auto,bf16-feedback,fp8-feedback",
+    "out": null
+  },
+  "rows": [
+    {
+      "arm": "alone",
+      "wall_seconds": 72.5,
+      "steps_per_second": 5.51,
+      "eval_loss": 1.8883,
+      "eval_loss_by_node": [
+        1.8893,
+        1.8872
+      ],
+      "nodes_identical": false,
+      "whole_sum_gap": 0.005080934900503028,
+      "arm_seconds": 78.9
+    },
+    {
+      "arm": "fp32-blocking",
+      "wall_seconds": 449.1,
+      "steps_per_second": 0.89,
+      "eval_loss": 1.6146,
+      "eval_loss_by_node": [
+        1.6146,
+        1.6146
+      ],
+      "nodes_identical": true,
+      "whole_sum_gap": 0.0,
+      "rounds_per_shard": 10.0,
+      "round_network_seconds": 36.77,
+      "bytes_per_shard_round": 7227392,
+      "waiting_share": 0.839,
+      "arm_seconds": 495.6
+    },
+    {
+      "arm": "fp32-overlap-auto",
+      "wall_seconds": 303.2,
+      "steps_per_second": 1.32,
+      "eval_loss": 1.7085,
+      "eval_loss_by_node": [
+        1.7084,
+        1.7086
+      ],
+      "nodes_identical": false,
+      "whole_sum_gap": 7.217988357636763e-05,
+      "rounds_per_shard": 7.0,
+      "round_network_seconds": 42.76,
+      "waited_per_round": 28.51,
+      "flight_seconds": 46.9,
+      "landed_steps_late": 51.4,
+      "h_path": [
+        40,
+        80,
+        40,
+        80,
+        42,
+        78,
+        1,
+        80,
+        40,
+        80,
+        42,
+        78,
+        1
+      ],
+      "bytes_per_shard_round": 7284736,
+      "waiting_share": 0.761,
+      "arm_seconds": 401.5
+    },
+    {
+      "arm": "bf16-feedback",
+      "wall_seconds": 162.4,
+      "steps_per_second": 2.46,
+      "eval_loss": 1.7091,
+      "eval_loss_by_node": [
+        1.7091,
+        1.7092
+      ],
+      "nodes_identical": false,
+      "whole_sum_gap": 3.752786319405834e-05,
+      "rounds_per_shard": 7.0,
+      "round_network_seconds": 21.42,
+      "waited_per_round": 12.33,
+      "flight_seconds": 22.34,
+      "landed_steps_late": 48.8,
+      "h_path": [
+        40,
+        80,
+        40,
+        80,
+        40,
+        80,
+        1,
+        80,
+        40,
+        80,
+        40,
+        80,
+        1
+      ],
+      "bytes_per_shard_round": 3283626,
+      "waiting_share": 0.553,
+      "arm_seconds": 198.4
+    },
+    {
+      "arm": "fp8-feedback",
+      "wall_seconds": 124.6,
+      "steps_per_second": 3.21,
+      "eval_loss": 1.7117,
+      "eval_loss_by_node": [
+        1.7114,
+        1.7119
+      ],
+      "nodes_identical": false,
+      "whole_sum_gap": 0.00011839352399908715,
+      "rounds_per_shard": 7.0,
+      "round_network_seconds": 13.32,
+      "waited_per_round": 5.83,
+      "flight_seconds": 14.36,
+      "landed_steps_late": 46.2,
+      "h_path": [
+        40,
+        80,
+        40,
+        75,
+        38,
+        72,
+        21,
+        1,
+        80,
+        40,
+        75,
+        38,
+        72,
+        21,
+        1
+      ],
+      "bytes_per_shard_round": 1761962,
+      "waiting_share": 0.418,
+      "arm_seconds": 143.1
+    }
+  ]
+}

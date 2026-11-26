@@ -807,3 +807,22 @@ def test_a_node_whose_state_differs_still_downloads_it(monkeypatch):
     with pytest.raises(membership.PeerSilent):
         # The source never serves: a node that asks for the state finds out.
         membership.adopt_run_state(mine, exchange, 0, 1, time.monotonic() + 60)
+
+
+def test_a_wait_for_a_round_in_flight_is_not_training(monkeypatch):
+    """With `outer_overlap` the training can stand still for the last round to
+    land; an automatic H that counted that as training halved H after every
+    wait and doubled it after every round without one (GPU-521)."""
+    import ravex._dist.outer as outer_module
+    from ravex._dist.outer import OuterLoop
+
+    now = [100.0]
+    monkeypatch.setattr(outer_module.time, "monotonic", lambda: now[0])
+    loop = OuterLoop(torch.nn.Linear(2, 2), inner_steps=80)
+    now[0] += 14.0
+    loop.stalled(49.0)
+    now[0] += 49.0
+    assert loop.trained_seconds() == 14.0
+    loop._restart_clock()
+    now[0] += 5.0
+    assert loop.trained_seconds() == 5.0, "the next round inherited the wait"

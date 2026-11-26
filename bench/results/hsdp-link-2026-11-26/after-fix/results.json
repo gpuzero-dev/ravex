@@ -1,0 +1,120 @@
+{
+  "args": {
+    "params": "4e6",
+    "hidden": 1024,
+    "steps": 400,
+    "batch": 16,
+    "inner": 40,
+    "min_rounds": 3,
+    "rate": "4mbit",
+    "delay_ms": 50,
+    "arms": "alone,fp32-overlap-auto,bf16-feedback,fp8-feedback",
+    "out": "bench/results/hsdp-link-2026-11-26/after-fix"
+  },
+  "rows": [
+    {
+      "arm": "alone",
+      "wall_seconds": 71.6,
+      "steps_per_second": 5.58,
+      "eval_loss": 1.8883,
+      "eval_loss_by_node": [
+        1.8893,
+        1.8872
+      ],
+      "nodes_identical": false,
+      "whole_sum_gap": 0.005080934900503028,
+      "arm_seconds": 77.4
+    },
+    {
+      "arm": "fp32-overlap-auto",
+      "wall_seconds": 182.7,
+      "steps_per_second": 2.19,
+      "eval_loss": 1.8361,
+      "eval_loss_by_node": [
+        1.8358,
+        1.8364
+      ],
+      "nodes_identical": false,
+      "whole_sum_gap": 0.001961364015343333,
+      "rounds_per_shard": 4.0,
+      "round_network_seconds": 40.95,
+      "waited_per_round": 23.54,
+      "flight_seconds": 42.12,
+      "landed_steps_late": 82.9,
+      "h_path": [
+        40,
+        80,
+        160,
+        124,
+        1,
+        80,
+        160,
+        124,
+        1
+      ],
+      "bytes_per_shard_round": 7332864,
+      "waiting_share": 0.608,
+      "arm_seconds": 214.7
+    },
+    {
+      "arm": "bf16-feedback",
+      "wall_seconds": 131.3,
+      "steps_per_second": 3.05,
+      "eval_loss": 1.7225,
+      "eval_loss_by_node": [
+        1.7225,
+        1.7225
+      ],
+      "nodes_identical": false,
+      "whole_sum_gap": 1.0147112240472275e-05,
+      "rounds_per_shard": 6.0,
+      "round_network_seconds": 21.57,
+      "waited_per_round": 11.1,
+      "flight_seconds": 22.59,
+      "landed_steps_late": 59.3,
+      "h_path": [
+        40,
+        80,
+        111,
+        93,
+        36,
+        1,
+        80,
+        111,
+        93,
+        36,
+        1
+      ],
+      "bytes_per_shard_round": 3286357,
+      "waiting_share": 0.455,
+      "arm_seconds": 174.7
+    },
+    {
+      "arm": "fp8-feedback",
+      "wall_seconds": 113.0,
+      "steps_per_second": 3.54,
+      "eval_loss": 1.7382,
+      "eval_loss_by_node": [
+        1.738,
+        1.7384
+      ],
+      "nodes_identical": false,
+      "whole_sum_gap": 0.0008252401498114678,
+      "rounds_per_shard": 6.0,
+      "round_network_seconds": 14.37,
+      "waited_per_round": 5.53,
+      "flight_seconds": 15.45,
+      "landed_steps_late": 53.6,
+      "h_path": [
+        40,
+        80,
+        1,
+        80,
+        1
+      ],
+      "bytes_per_shard_round": 1759914,
+      "waiting_share": 0.367,
+      "arm_seconds": 134.9
+    }
+  ]
+}

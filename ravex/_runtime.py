@@ -2818,6 +2818,7 @@ class RavexRuntime:
             self._round_failed(holder.error)
             return False
         self._outer.land(holder.flight)
+        self._outer.stalled(holder.stalled)
         report = holder.report
         report["stalled_seconds"] = holder.stalled
         report["trained_seconds"] = holder.flight.trained_seconds

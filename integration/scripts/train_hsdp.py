@@ -14,6 +14,7 @@ them together. Each process writes what it holds to ``result-<rank>.json``.
 """
 
 import argparse
+import hashlib
 import json
 import os
 import time
@@ -53,6 +54,7 @@ def main():
     parser.add_argument("--steps", type=int, default=20)
     parser.add_argument("--batch", type=int, default=8)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--eval-batches", type=int, default=8)
     args = parser.parse_args()
 
     cuda = torch.cuda.is_available()
@@ -101,9 +103,20 @@ def main():
         model(x)
         shard = sum(p.to_local().double().sum().item() for p in model.parameters())
         whole = sum(p.full_tensor().double().sum().item() for p in model.parameters())
+        # The same held-out batches on every process of every node: one
+        # training batch's loss is too noisy to tell two runs apart.
+        held_out = torch.Generator().manual_seed(999)
+        evaluated = 0.0
+        for _ in range(args.eval_batches):
+            x = torch.randn(args.batch, args.hidden, generator=held_out).to(device)
+            evaluated += float((model(x) - x @ target).pow(2).mean())
+        digest = hashlib.sha256()
+        for p in model.parameters():
+            digest.update(p.full_tensor().detach().cpu().double().numpy().tobytes())
     result = json.dumps({
         "node": node, "rank": rank, "world": world, "steps": args.steps,
         "seconds": round(elapsed, 3), "loss": float(loss), "shard": shard, "whole": whole,
+        "eval_loss": evaluated / max(args.eval_batches, 1), "model": digest.hexdigest()[:16],
     })
     # A file per process as well as the line: two processes printing at once
     # share a line of the launcher's output.

@@ -2,6 +2,16 @@
 
 ## Unreleased
 
+### Fixed
+
+- **An automatic H with `outer_overlap` counts only the training (GPU-521).**
+  The wait for the previous round to land counted as training time, so on a
+  link slower than the training H read the round as long enough, halved,
+  met no wait the next round, doubled, and swung between two values without
+  ever hiding the network. Measured on `bench/hsdp_link.py` (4 Mbit/s): H now
+  climbs, the time spent waiting drops by 10-16 points and the steps per
+  second rise by 10-65%.
+
 ### Changed
 
 - **An HSDP node takes an automatic H (GPU-213).** `outer_auto_steps` was

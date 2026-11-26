@@ -802,7 +802,7 @@ class OuterLoop:
         #: the same decided set - and it travels with the outer state to a
         #: node that joins, and with the checkpoint to one that resumes.
         self.model_steps = 0
-        self._started_at = time.monotonic()
+        self._restart_clock()
         #: What quantizing this node's delta threw away last round, carried
         #: into the next one (GPU-139). Its own, never exchanged, and not in
         #: `state_dict`, which also travels to a node that joins: a joiner
@@ -829,9 +829,28 @@ class OuterLoop:
         """One local optimizer step happened."""
         self.steps_this_round += 1
 
+    def _restart_clock(self) -> None:
+        self._started_at = time.monotonic()
+        self._stalled = 0.0
+
     def trained_seconds(self) -> float:
-        """How long the round now open has been training, by the clock."""
-        return time.monotonic() - self._started_at
+        """How long the round now open has been training, by the clock, less
+        what it stood still for a round in flight to land (GPU-521).
+
+        With ``outer_overlap`` the previous round lands inside this one, and
+        when the network is slower than the training the training waits for
+        it there. That wait counted as training: on a 4 Mbit/s link a round of
+        80 steps, 14 s of compute, read as 63 s, so an automatic H saw the
+        training outlast the network, halved H, met no wait the next round,
+        doubled it again, and went 40, 80, 40, 80 without ever hiding the
+        network.
+        """
+        return time.monotonic() - self._started_at - self._stalled
+
+    def stalled(self, seconds: float) -> None:
+        """The training of the round now open waited ``seconds`` for a round
+        in flight; that is not training (see :meth:`trained_seconds`)."""
+        self._stalled += max(float(seconds), 0.0)
 
     def set_inner_steps(self, steps: int, now: bool) -> None:
         """Change H, for the round now open or for the next one (GPU-231).
@@ -908,7 +927,7 @@ class OuterLoop:
         report = self._outer_step(gradient, steps)
         self.write_back()
         self.steps_this_round = 0
-        self._started_at = time.monotonic()
+        self._restart_clock()
         return report
 
     def _outer_step(self, gradient: ParamMap, steps: List[int]) -> Dict[str, Any]:
@@ -959,7 +978,7 @@ class OuterLoop:
         """
         self._retire_round(self.steps_this_round)
         self.steps_this_round = 0
-        self._started_at = time.monotonic()
+        self._restart_clock()
 
     def _retire_round(self, steps: int) -> None:
         """Say the round was abandoned and move the counter on past it."""
@@ -1008,7 +1027,7 @@ class OuterLoop:
         )
         flight.trained_seconds = self.trained_seconds()
         self.steps_this_round = 0
-        self._started_at = time.monotonic()
+        self._restart_clock()
         if self.pending_inner_steps is not None:
             # The round that starts here is the first every node starts
             # knowing the new H (GPU-231): see `set_inner_steps`.
@@ -1094,7 +1113,7 @@ class OuterLoop:
             self.outer = dict(state["outer"])
         if state.get("optimizer"):
             self.optimizer.load_state_dict(state["optimizer"])
-        self._started_at = time.monotonic()
+        self._restart_clock()
 
 
 class RoundInFlight:
