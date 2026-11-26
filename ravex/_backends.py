@@ -254,8 +254,10 @@ _PREFIX = "ravex"
 #: state: with an older one rank 0 of an outer loop ran out of memory at
 #: the start (GPU-443). 0.4.0 is the first that chooses the saves between
 #: two checkpoints itself, from what they cost (`window_steps`, `wants`):
-#: Ravex no longer weighs deltas or watches the link (GPU-517).
-MOONCLIP_FLOOR = (0, 4, 0)
+#: Ravex no longer weighs deltas or watches the link (GPU-517). 0.4.2 is the
+#: first that drops the history a resume left when an older step is saved,
+#: so the latest step is the last one saved (GPU-530).
+MOONCLIP_FLOOR = (0, 4, 2)
 
 
 class RemoteNeedsMoonclip(RuntimeError):
