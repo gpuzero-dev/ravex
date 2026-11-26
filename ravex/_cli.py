@@ -317,6 +317,21 @@ def _import(args) -> int:
     return 0
 
 
+def _contamination(args) -> int:
+    """Build the benchmarks' n-gram index a run checks its data against
+    (GPU-437): the one step that reads the Hugging Face Hub."""
+    from ravex._contamination import build_from_hub, write_index
+
+    names = [name.strip() for name in args.benchmarks.split(",") if name.strip()]
+    index = build_from_hub(names, args.tokenizer)
+    write_index(index, args.out)
+    print(
+        "%d items, %d distinct %d-grams, for the tokenizer %s, in %s"
+        % (index.count, index.hashes.numel(), index.n, index.tokenizer, args.out)
+    )
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="ravex",
@@ -416,6 +431,24 @@ def main(argv=None) -> int:
     imports.add_argument("--storage", required=True, help="a new directory for the run's store")
     imports.add_argument("--name", default=None, help="the run's name (default: the source's)")
     imports.set_defaults(handler=_import)
+
+    contamination = subparsers.add_parser(
+        "contamination",
+        help="build the benchmarks' n-gram index a run checks its data against (contamination_index)",
+    )
+    contamination.add_argument("action", choices=("build",))
+    contamination.add_argument(
+        "--tokenizer", required=True, help="the model's tokenizer on the Hugging Face Hub, e.g. gpt2"
+    )
+    contamination.add_argument(
+        "--benchmarks",
+        default="mmlu,hellaswag,gsm8k,arc_challenge",
+        help="which, comma-separated (default: mmlu,hellaswag,gsm8k,arc_challenge)",
+    )
+    contamination.add_argument(
+        "--out", required=True, help="the index file, or s3://bucket/key with Moonclip's MOONCLIP_S3_* keys"
+    )
+    contamination.set_defaults(handler=_contamination)
 
     args = parser.parse_args(argv)
     if not hasattr(args, "handler"):

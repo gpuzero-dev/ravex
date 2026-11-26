@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Data contamination (GPU-437).** `ravex contamination build --tokenizer
+  <name>` writes an index of the 13-grams of MMLU, HellaSwag, GSM8K and
+  ARC-Challenge in that tokenizer's ids (exact hashes, no Bloom filter), to a
+  file or `s3://`. With `contamination_index` set, a run compares a sample of
+  its training forwards' token ids with it on the device and logs
+  `data/ngram13_overlap` and `data/benchmark_overlap` (per benchmark too)
+  every `metrics_every` steps.
+
 ## 0.19.0 — 2026-11-26
 
 ### Added

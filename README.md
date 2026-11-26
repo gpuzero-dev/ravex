@@ -122,7 +122,8 @@ raises.
 the learning rate, the time per step and the gradient norm; for a language
 model the tokens and samples per second per GPU, the TFLOP/s and the MFU (on a
 GPU Ravex knows the peak of); the goodput, where the step time goes (data,
-saves, rounds) and, given the machine's price, the cost per million tokens;
+saves, rounds) and, given the machine's price, the cost per million tokens; given an index of the benchmarks, how much of
+MMLU, HellaSwag, GSM8K and ARC the data contains (`ravex contamination build`);
 histograms per layer of the weights, the gradients, the update-to-weight
 ratio and the activations, for the embedding, the first, middle and last block
 and the head; and the machine's GPU, CPU and memory. Log the loss as

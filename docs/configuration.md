@@ -60,6 +60,9 @@ ravex status
 | `histograms_every` | `RAVEX_HISTOGRAMS_EVERY` | `200` | Steps between two histograms of the weights and gradients of the largest parameters. `0` turns them off. |
 | `system_metrics_every` | `RAVEX_SYSTEM_METRICS_EVERY` | `30` | Seconds between two samples of the machine: GPU utilisation and memory, CPU, RAM. `0` turns them off. |
 | `price_per_hour` | `RAVEX_PRICE_PER_HOUR` | none | What the machine costs an hour, in dollars, for `perf/usd_per_m_tokens`. Whoever rents the machine sets it; without it no cost is written. |
+| `contamination_index` | `RAVEX_CONTAMINATION_INDEX` | none | The benchmarks' n-gram index the training data is checked against, built by `ravex contamination build` for the model's tokenizer: a local path or `s3://bucket/key`. Without it no `data/*` metric is written. See [Metrics](#metrics). |
+| `contamination_every` | `RAVEX_CONTAMINATION_EVERY` | `10` | Steps between two samples of a training forward's token ids for that check. |
+| `contamination_rows` | `RAVEX_CONTAMINATION_ROWS` | `8` | How many rows of the batch each sample reads. |
 | `metrics_chunk_every` | `RAVEX_METRICS_CHUNK_EVERY` | `15` | Seconds between two metric chunks: how late a reader of the bucket sees a value, and the most a crash loses. See [Metrics](#metrics). |
 | `frameworks.auto_detect` | — | `true` | Whether to identify the training framework in use. File only: there is no environment variable for it. |
 
@@ -861,6 +864,31 @@ CPU and RAM need `psutil`.
 - `perf/usd_per_m_tokens`, with `price_per_hour` set: the machine's cost over
   the run's wall-clock, over the tokens of all its GPUs (`LOCAL_WORLD_SIZE`),
   per million.
+
+**Data contamination** (GPU-437), with `contamination_index` set: whether the
+training data holds benchmark test items, by 13-gram overlap on the model's
+token ids. The index is built once, on a machine with the internet, for the
+model's tokenizer:
+
+```sh
+pip install datasets transformers
+ravex contamination build --tokenizer gpt2 --out s3://my-bucket/indexes/gpt2.pt
+```
+
+It holds the test split of MMLU, GSM8K and ARC-Challenge and HellaSwag's
+validation (`--benchmarks` picks fewer), as the sorted 64-bit hashes of every
+13-token window of every item: exact, with no false positive. Every
+`contamination_every` steps the first `contamination_rows` rows of one
+training forward's ids are compared with it, on their device, and every
+`metrics_every` steps:
+
+- `data/ngram13_overlap`: the share of the sampled 13-grams found in a
+  benchmark, over the interval;
+- `data/benchmark_overlap`: the share of benchmark items with a 13-gram seen so
+  far in this execution, and `data/benchmark_overlap/<benchmark>` for each.
+
+A sample, rank 0's batches only, and an index of another tokenizer finds
+nothing: its tokenizer is named in the run's log when the index is read.
 
 Every `histograms_every` steps come the histograms **per layer**, named after
 the tracked model's parameters: `train/weights/<name>` and `train/grads/<name>`

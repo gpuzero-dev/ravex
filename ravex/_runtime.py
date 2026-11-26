@@ -370,6 +370,10 @@ class RavexRuntime:
         from ravex._goodput import Goodput
 
         self._goodput = Goodput()
+        #: The check against the benchmarks' n-grams (GPU-437): None until
+        #: the first training forward reads the index, False with none.
+        self._contamination: Any = None
+        self._contamination_step = -1
         self._born = time.perf_counter()
         self._sequence: Optional[int] = None
         self._autocast_dtype: Any = None
@@ -1061,6 +1065,7 @@ class RavexRuntime:
             if ids is None:
                 return
             self._tokens += int(ids.numel())
+            self._check_contamination(ids)
             self._samples += int(ids.shape[0]) if ids.dim() > 1 else 1
             self._sequence = int(ids.shape[-1]) if ids.dim() > 0 else None
             self._autocast_dtype = _autocast_dtype(torch, ids.device.type)
@@ -1428,6 +1433,35 @@ class RavexRuntime:
             return None
         return sync_prefix
 
+    def _check_contamination(self, ids: Any) -> None:
+        """Compare this forward's token ids with the benchmarks' n-grams, on
+        one forward every ``contamination_every`` steps (GPU-437). The index
+        is read at the first one; a missing or unreadable index is said once
+        and the run trains on without the check."""
+        if not self.config.contamination_index or not is_main_process():
+            return
+        if self._contamination is None:
+            from ravex._contamination import Check, read_index
+
+            try:
+                index = read_index(self.config.contamination_index, self.config.storage)
+            except Exception as exc:
+                logger.warning("No contamination check: %s could not be read (%s)", self.config.contamination_index, exc)
+                self._contamination = False
+                return
+            logger.info(
+                "Checking for contamination against %s (%s), made with the tokenizer %s",
+                ", ".join(b["name"] for b in index.benchmarks), self.config.contamination_index, index.tokenizer,
+            )
+            self._contamination = Check(index, max(1, self.config.contamination_rows))
+        if self._contamination is False:
+            return
+        step = self.registry.step_count
+        every = max(1, self.config.contamination_every)
+        if step % every == 0 and step != self._contamination_step:
+            self._contamination_step = step
+            self._contamination.observe(ids)
+
     def waited_for_data(self, seconds: float) -> None:
         """The loop waited this long for a batch (GPU-522)."""
         self._spent["data_wait"] += seconds
@@ -1479,6 +1513,9 @@ class RavexRuntime:
             if flops:
                 values[MFU] = prepare(MFU, flops.mfu(rate, self._sequence))
                 values[TFLOPS] = prepare(TFLOPS, flops.tflops(rate, self._sequence))
+        if self._contamination:
+            for name, value in self._contamination.figures().items():
+                values[name] = prepare(name, value)
         gpus = int(os.environ.get("LOCAL_WORLD_SIZE", "1") or 1)
         for name, value in self._goodput.metrics(gpus).items():
             values[name] = prepare(name, value)

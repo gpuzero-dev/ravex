@@ -818,6 +818,16 @@ class RavexConfig:
     #: CPU and RAM. Zero turns them off.
     system_metrics_every: float = 30.0
 
+    #: The benchmarks' n-grams to check the training data against (GPU-437):
+    #: a file ``ravex contamination build`` wrote for the model's tokenizer,
+    #: at a local path or ``s3://`` in the run's bucket. Without it no
+    #: ``data/*`` metric is written.
+    contamination_index: Optional[str] = None
+    #: Steps between two samples of a training forward's token ids, and how
+    #: many of its rows: the check costs a few kernels per sample.
+    contamination_every: int = 10
+    contamination_rows: int = 8
+
     #: What the machine this process runs on costs an hour, in dollars, for
     #: ``perf/usd_per_m_tokens`` (GPU-522). Whoever rents the machine knows
     #: it and sets ``RAVEX_PRICE_PER_HOUR``; without it no cost is written.
@@ -1051,6 +1061,12 @@ class RavexConfig:
             self.run_id = value
         if (value := get("NAME")) is not None:
             self.name = value or None
+        if (value := get("CONTAMINATION_INDEX")) is not None:
+            self.contamination_index = value or None
+        if (value := get("CONTAMINATION_EVERY")) is not None:
+            self.contamination_every = _as_int(value, self.contamination_every)
+        if (value := get("CONTAMINATION_ROWS")) is not None:
+            self.contamination_rows = _as_int(value, self.contamination_rows)
         if (value := get("PRICE_PER_HOUR")) is not None:
             self.price_per_hour = _as_float(value, 0.0) or None if value else None
         if (value := get("RESUME_STEP")) is not None:
@@ -1134,6 +1150,8 @@ class RavexConfig:
             "outer_deadline",
             "metrics_every",
             "histograms_every",
+            "contamination_every",
+            "contamination_rows",
         )
         boolean = (
             "enabled",
