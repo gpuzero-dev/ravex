@@ -19,7 +19,7 @@ on:
     # Not `deploy`: CD.yml calls this workflow on the commit it publishes,
     # before the tag (GPU-443), and a second run of the same commit beside it
     # would gate nothing.
-    branches-ignore: [deploy]
+    branches: [main]
   # Run it by hand, without inventing a commit to trigger it. The need showed up
   # the first time this repository had Actions switched on after the pushes had
   # already happened: main was untested and there was no event left to replay.
