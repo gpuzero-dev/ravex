@@ -13,6 +13,10 @@ venv/
 .coverage
 htmlcov/
 
+# A benchmark's raw output per node (logs, per-rank results): the folder's
+# RESULTS.md and results.json are what is kept, and say what the run showed.
+bench/results/**/node[0-9]*/
+
 # Checkpoints and logs produced by the examples and the test suite
 checkpoints/
 *.pt
