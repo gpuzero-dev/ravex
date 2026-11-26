@@ -158,6 +158,16 @@ class CheckpointBackend(ABC):
         """
         return None
 
+    def metadata_of(self, step: int) -> Dict[str, str]:
+        """The string metadata saved with the checkpoint at ``step``.
+
+        What rides there rather than in the state is what must not change
+        the checkpoint's fingerprint: the goodput sums are timings, and the
+        same training must fingerprint the same (GPU-522). Empty when there
+        is none.
+        """
+        return {}
+
     @abstractmethod
     def has_checkpoint(self) -> bool:
         """Whether a resumable checkpoint exists. Cheap; no tensor loading."""
@@ -611,6 +621,18 @@ class MoonclipBackend(CheckpointBackend):
         steps = {int(s["step"]) for s in snapshots if s.get("step") is not None}
         return sorted(steps)
 
+    def metadata_of(self, step: int) -> Dict[str, str]:
+        try:
+            snapshots = self._manager.list_snapshots()
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning("Could not list snapshots: %s", exc)
+            return {}
+        # Newest first, as `load_step` chooses a step written twice.
+        for snapshot in reversed(snapshots):
+            if snapshot.get("step") is not None and int(snapshot["step"]) == step:
+                return dict(snapshot.get("metadata") or {})
+        return {}
+
     def known_checkpoints(self) -> List[Dict[str, Any]]:
         try:
             snapshots = self._manager.list_snapshots()
@@ -859,6 +881,9 @@ class TorchSaveBackend(CheckpointBackend):
         )
         self._pending: Optional[Future] = None
         self.store_root = self.directory
+        #: Step -> the metadata a load found in its file and took out of the
+        #: state, for `metadata_of`: one pickle, read once.
+        self._loaded_metadata: Dict[int, Dict[str, str]] = {}
         #: Step -> SHA-256 of its file, filled by the writer while the file
         #: is certainly still there (``None`` means nobody will ask). See
         #: `_write`.
@@ -951,7 +976,7 @@ class TorchSaveBackend(CheckpointBackend):
         if not files:
             return None
         state = torch.load(files[-1], map_location="cpu", weights_only=False)
-        state.pop("_ravex_metadata", None)
+        self._loaded_metadata[_step_of(files[-1])] = state.pop("_ravex_metadata", None) or {}
         return state
 
     def latest_step(self) -> Optional[int]:
@@ -970,8 +995,11 @@ class TorchSaveBackend(CheckpointBackend):
         if not os.path.exists(path):
             return None
         state = torch.load(path, map_location="cpu", weights_only=False)
-        state.pop("_ravex_metadata", None)
+        self._loaded_metadata[step] = state.pop("_ravex_metadata", None) or {}
         return state
+
+    def metadata_of(self, step: int) -> Dict[str, str]:
+        return dict(self._loaded_metadata.get(step, {}))
 
     def has_checkpoint(self) -> bool:
         return bool(self._files())

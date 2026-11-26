@@ -55,6 +55,10 @@ PERPLEXITY = {"train/loss": "train/ppl", "val/loss": "val/ppl"}
 
 TOKENS_PER_SECOND = "perf/tokens_per_s_per_gpu"
 MFU = "perf/mfu"
+#: The model FLOPs one GPU achieved, the number behind the MFU (GPU-522).
+TFLOPS = "perf/tflops_per_gpu"
+#: Sequences per second per GPU: the token ids' first dimension (GPU-522).
+SAMPLES_PER_SECOND = "perf/samples_per_s_per_gpu"
 
 #: Dense peak TFLOPS per GPU model and compute dtype, from each vendor's
 #: datasheet: without sparsity, and for GeForce cards with the fp32
@@ -309,9 +313,12 @@ class Flops:
         #: The GPU's peak for this model's dtype mix, in TFLOPS.
         self.peak_tflops = peak_tflops
 
-    def mfu(self, tokens_per_second: float, sequence: Optional[int]) -> float:
+    def tflops(self, tokens_per_second: float, sequence: Optional[int]) -> float:
         per_token = self.per_token + self.attention_per_position * (sequence or 0)
-        return tokens_per_second * per_token / (self.peak_tflops * 1e12)
+        return tokens_per_second * per_token / 1e12
+
+    def mfu(self, tokens_per_second: float, sequence: Optional[int]) -> float:
+        return self.tflops(tokens_per_second, sequence) / self.peak_tflops
 
 
 def flops_for(model: Any, peaks: Mapping[str, float], autocast: Optional[Any], tf32: bool) -> Optional[Flops]:

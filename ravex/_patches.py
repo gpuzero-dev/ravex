@@ -48,6 +48,7 @@ from __future__ import annotations
 import functools
 import logging
 import sys
+import time
 from typing import Any, Callable, List, Tuple
 
 from ravex._resume import stops_the_run
@@ -474,12 +475,16 @@ class _BatchBoundaryIterator:
                 raise
             logger.warning("Checkpoint at batch boundary failed: %s", exc)
 
+        # The time the loop waits for its batch, apart from the boundary work
+        # above, which has its own counts (GPU-522).
+        waiting = time.perf_counter()
         try:
             batch = next(self._inner)  # StopIteration ends the epoch, as usual
         except StopIteration:
             if not self._roll_into_next_epoch():
                 raise
             batch = next(self._inner)
+        self._runtime.waited_for_data(time.perf_counter() - waiting)
 
         self._yielded += 1
         if self._tracked is not None:

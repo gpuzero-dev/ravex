@@ -59,6 +59,7 @@ ravex status
 | `training_metrics` | `RAVEX_TRAINING_METRICS` | `true` | Take the gradient norm and the parameter histograms on Ravex's own, from the parameters the optimizer steps. `false` leaves the learning rate and time per step. See [Metrics](#metrics). |
 | `histograms_every` | `RAVEX_HISTOGRAMS_EVERY` | `200` | Steps between two histograms of the weights and gradients of the largest parameters. `0` turns them off. |
 | `system_metrics_every` | `RAVEX_SYSTEM_METRICS_EVERY` | `30` | Seconds between two samples of the machine: GPU utilisation and memory, CPU, RAM. `0` turns them off. |
+| `price_per_hour` | `RAVEX_PRICE_PER_HOUR` | none | What the machine costs an hour, in dollars, for `perf/usd_per_m_tokens`. Whoever rents the machine sets it; without it no cost is written. |
 | `metrics_chunk_every` | `RAVEX_METRICS_CHUNK_EVERY` | `15` | Seconds between two metric chunks: how late a reader of the bucket sees a value, and the most a crash loses. See [Metrics](#metrics). |
 | `frameworks.auto_detect` | — | `true` | Whether to identify the training framework in use. File only: there is no environment variable for it. |
 
@@ -831,11 +832,35 @@ CPU and RAM need `psutil`.
   table (H100, H200, A100, A10, A40, L4, L40S, RTX A6000, RTX 3090 and 4090,
   MI300X), off CUDA, or on a sharded model, there is no MFU: a guessed number
   is worse than none.
+- `perf/tflops_per_gpu`, where there is an MFU: the same FLOPs per second
+  before the division by the peak (GPU-522).
+- `perf/samples_per_s_per_gpu`: the sequences of those forwards, the token
+  ids' first dimension, over the same time.
 - `train/ppl` and `val/ppl`: `exp` of what the script logs as `train/loss` and
   `val/loss`, at the same steps. Ravex does not see the loss on its own, so
   these come only with the script's `log_metrics`; log the loss under those
   two names. In a multi-node run the model's series has the perplexity of the
   mean loss.
+
+**Compute metrics** (GPU-522), every `metrics_every` steps as well:
+
+- `perf/data_wait_s`, `perf/checkpoint_s` and `perf/comm_s`: per step, on
+  the scale of `train/step_seconds`, the time the loop spent waiting for its
+  batch from a `DataLoader`, blocked on a save, and waiting for an outer round
+  of a multi-node run. The gradients' all-reduce of DDP or FSDP overlaps the
+  backward and is inside the step, not in `perf/comm_s`.
+- `perf/goodput`: the share of the run's wall-clock spent on steps that end up
+  in the model. Outside it: the start and resume of every execution, the three
+  waits above and, after a crash, the time between the checkpoint it resumes
+  from and the crash, whose steps are trained again. The sums ride in each
+  checkpoint's metadata, so they follow the model across executions; the lost
+  tail is read from `goodput.json`, which every interval writes beside the
+  store, and a resume on a new machine, without that file, does not count it.
+- `perf/goodput_tokens_per_s`: the tokens in the model over that wall-clock,
+  per GPU; `perf/tokens_total_per_gpu`, the tokens themselves.
+- `perf/usd_per_m_tokens`, with `price_per_hour` set: the machine's cost over
+  the run's wall-clock, over the tokens of all its GPUs (`LOCAL_WORLD_SIZE`),
+  per million.
 
 Every `histograms_every` steps come the histograms **per layer**, named after
 the tracked model's parameters: `train/weights/<name>` and `train/grads/<name>`

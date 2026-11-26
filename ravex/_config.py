@@ -818,6 +818,11 @@ class RavexConfig:
     #: CPU and RAM. Zero turns them off.
     system_metrics_every: float = 30.0
 
+    #: What the machine this process runs on costs an hour, in dollars, for
+    #: ``perf/usd_per_m_tokens`` (GPU-522). Whoever rents the machine knows
+    #: it and sets ``RAVEX_PRICE_PER_HOUR``; without it no cost is written.
+    price_per_hour: Optional[float] = None
+
     #: Seconds between two metric chunks. A chunk is a file written once and
     #: never touched again, which is what lets it go up to a bucket; so this is
     #: also how late a dashboard reading the bucket sees a value, and the most
@@ -1046,6 +1051,8 @@ class RavexConfig:
             self.run_id = value
         if (value := get("NAME")) is not None:
             self.name = value or None
+        if (value := get("PRICE_PER_HOUR")) is not None:
+            self.price_per_hour = _as_float(value, 0.0) or None if value else None
         if (value := get("RESUME_STEP")) is not None:
             self.resume_step = _as_int(value, 0) if value else None
         if (value := get("FORK_FROM")) is not None:

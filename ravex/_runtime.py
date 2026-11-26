@@ -21,6 +21,7 @@ stderr.
 from __future__ import annotations
 
 import collections
+import json
 import logging
 import os
 import signal
@@ -350,11 +351,26 @@ class RavexRuntime:
         #: For the automatic step metrics: the step and the clock at the last
         #: record, so the time per step is an average over the interval rather
         #: than the one step that happened to land on the cadence.
-        self._metrics_mark: Optional[Tuple[int, float, int]] = None
+        self._metrics_mark: Optional[Tuple[int, float, int, int]] = None
         #: Tokens the watched models were called with in training, counted at
         #: their forward from the token ids' shape (GPU-436), and the last
         #: sequence length and autocast dtype seen there, for the MFU.
         self._tokens = 0
+        #: The sequences of those forwards: the ids' first dimension (GPU-522).
+        self._samples = 0
+        #: Seconds the loop spent on no step, by cause, since the process
+        #: started: waiting for a batch, blocked on a save, waiting for an
+        #: outer round. The step metrics report each per step, and goodput
+        #: takes all three out of the wall-clock (GPU-522).
+        self._spent: Dict[str, float] = {"data_wait": 0.0, "checkpoint": 0.0, "comm": 0.0}
+        self._spent_mark: Dict[str, float] = dict(self._spent)
+        #: The run's goodput accounting, carried in the checkpoint (GPU-522),
+        #: and when this process started: its start and its resume are
+        #: wall-clock that trains nothing.
+        from ravex._goodput import Goodput
+
+        self._goodput = Goodput()
+        self._born = time.perf_counter()
         self._sequence: Optional[int] = None
         self._autocast_dtype: Any = None
         #: The MFU's per-token cost and the GPU's peak, worked out at the
@@ -1045,6 +1061,7 @@ class RavexRuntime:
             if ids is None:
                 return
             self._tokens += int(ids.numel())
+            self._samples += int(ids.shape[0]) if ids.dim() > 1 else 1
             self._sequence = int(ids.shape[-1]) if ids.dim() > 0 else None
             self._autocast_dtype = _autocast_dtype(torch, ids.device.type)
             # The forward of a histogram step: its blocks' outputs are charted.
@@ -1411,35 +1428,65 @@ class RavexRuntime:
             return None
         return sync_prefix
 
+    def waited_for_data(self, seconds: float) -> None:
+        """The loop waited this long for a batch (GPU-522)."""
+        self._spent["data_wait"] += seconds
+
     def _log_step_metrics(self, optimizer: Any) -> None:
-        """The learning rates and the time per step, every `metrics_every` steps."""
+        """The learning rates, the time per step and where it went, and the
+        compute figures, every `metrics_every` steps."""
         step = self.registry.step_count
         now = time.perf_counter()
         if self._metrics_mark is None:
-            self._metrics_mark = (step, now, self._tokens)
+            # The time before the first step's end - the start, the resume,
+            # the first step's own warm-up - counts as no step's; its tokens
+            # are in the model all the same.
+            self._goodput.add(now - self._born, now - self._born, self._tokens, self.config.price_per_hour)
+            self._metrics_mark = (step, now, self._tokens, self._samples)
+            self._spent_mark = dict(self._spent)
             return
         if step % self.config.metrics_every != 0:
             return
         from ravex._metrics import prepare
 
-        mark_step, mark_time, mark_tokens = self._metrics_mark
-        self._metrics_mark = (step, now, self._tokens)
+        mark_step, mark_time, mark_tokens, mark_samples = self._metrics_mark
+        self._metrics_mark = (step, now, self._tokens, self._samples)
+        spent_mark, self._spent_mark = self._spent_mark, dict(self._spent)
         values: Dict[str, Any] = {}
         if step > mark_step:
             values["train/step_seconds"] = prepare(
                 "train/step_seconds", (now - mark_time) / (step - mark_step)
             )
+            # Where the steps' time went besides the steps: per step, so the
+            # three sit on the same scale as train/step_seconds (GPU-522).
+            for cause, value in self._spent.items():
+                name = "perf/%s_s" % cause
+                values[name] = prepare(name, (value - spent_mark[cause]) / (step - mark_step))
         tokens = self._tokens - mark_tokens
+        lost = sum(self._spent.values()) - sum(spent_mark.values())
+        self._goodput.add(now - mark_time, lost, tokens, self.config.price_per_hour)
         if tokens > 0 and now > mark_time:
             # This process's tokens over its own time: per GPU, with no
             # collective, since each rank feeds its one GPU its own batch.
-            from ravex._pretraining import MFU, TOKENS_PER_SECOND
+            from ravex._pretraining import MFU, SAMPLES_PER_SECOND, TFLOPS, TOKENS_PER_SECOND
 
             rate = tokens / (now - mark_time)
             values[TOKENS_PER_SECOND] = prepare(TOKENS_PER_SECOND, rate)
+            values[SAMPLES_PER_SECOND] = prepare(
+                SAMPLES_PER_SECOND, (self._samples - mark_samples) / (now - mark_time)
+            )
             flops = self._model_flops()
             if flops:
                 values[MFU] = prepare(MFU, flops.mfu(rate, self._sequence))
+                values[TFLOPS] = prepare(TFLOPS, flops.tflops(rate, self._sequence))
+        gpus = int(os.environ.get("LOCAL_WORLD_SIZE", "1") or 1)
+        for name, value in self._goodput.metrics(gpus).items():
+            values[name] = prepare(name, value)
+        if is_main_process():
+            try:
+                self._goodput.write(self.config.storage.path, step)
+            except OSError as exc:
+                logger.debug("Cannot write the goodput file: %s", exc)
         groups = getattr(optimizer, "param_groups", None) or []
         for index, group in enumerate(groups):
             lr = group.get("lr") if isinstance(group, dict) else None
@@ -2660,6 +2707,7 @@ class RavexRuntime:
             self._round_failed(exc)
             return
         report["stalled_seconds"] = time.monotonic() - started
+        self._spent["comm"] += report["stalled_seconds"]
         report["trained_seconds"] = trained_seconds
         report["trained_steps"] = trained_steps
         self._round_closed(report, time.monotonic() - started)
@@ -2821,6 +2869,7 @@ class RavexRuntime:
         self._outer.stalled(holder.stalled)
         report = holder.report
         report["stalled_seconds"] = holder.stalled
+        self._spent["comm"] += holder.stalled
         report["trained_seconds"] = holder.flight.trained_seconds
         report["trained_steps"] = holder.flight.steps
         report["landed_after_steps"] = int(self._outer.steps_this_round)
@@ -3207,6 +3256,10 @@ class RavexRuntime:
                 self._keep_hyperparameters(chosen)
                 logger.info("Resumed with this script's hyperparameters, as keep_hyperparameters asks")
             self._restore_extra_state(resume_manager.restored_extra)
+            if resumed:
+                saved = resume_manager.backend.metadata_of(self.registry.step_count).get("goodput")
+                self._goodput.restore(json.loads(saved) if saved else None)
+                self._goodput.count_lost_tail(self.config.storage.path, self.registry.step_count)
         except (ResumeStepMissing, NothingToResume):
             # Not caught here: `resume_step` is a number somebody typed, and
             # "starting from scratch" is the one outcome they did not ask for;
@@ -3756,6 +3809,11 @@ class RavexRuntime:
                     }
                     if self.config.run_id:
                         metadata["run_id"] = self.config.run_id
+                    # The goodput sums follow the model, so a resume gets them
+                    # as they were at this step; in the metadata, not the
+                    # state, because they are timings and the audit's
+                    # fingerprint is of the state (GPU-522).
+                    metadata["goodput"] = json.dumps(self._goodput.state())
                     if final:
                         metadata["final"] = "true"
                     if emergency:
@@ -3843,9 +3901,9 @@ class RavexRuntime:
         # verdict above they have all waited for the same handoff, so the
         # number is theirs too — and the rank a SIGTERM lands on is anyone's
         # guess. See `_emergency_is_declined`.
-        self._last_checkpoint_cost = phases.get("skew", 0.0) + (
-            time.perf_counter() - started
-        )
+        cost = phases.get("skew", 0.0) + (time.perf_counter() - started)
+        self._last_checkpoint_cost = cost
+        self._spent["checkpoint"] += cost
         if not wrote:
             return False
 

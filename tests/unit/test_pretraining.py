@@ -121,6 +121,7 @@ class TestFlops:
         flops = Flops(per_token=6e9, attention_per_position=0.0, peak_tflops=100.0)
         # 10k tokens/s of 6 GFLOPs each is 60 TFLOPS: 60% of 100.
         assert flops.mfu(10_000, sequence=None) == pytest.approx(0.6)
+        assert flops.tflops(10_000, sequence=None) == pytest.approx(60.0)
 
 
 class TestTokens:
@@ -223,10 +224,10 @@ class TestLayers:
         assert [name for name, _ in layer_parameters(model)] == ["0.weight", "1.weight", "0.bias", "1.bias"]
 
 
-def train_tiny(steps, **config):
+def train_tiny(steps, backend="torch_save", **config):
     """A tiny language model trained with nothing but the decorator and a logged loss."""
 
-    @ravex.train_loop(backend="torch_save", checkpoint_every=10_000, **config)
+    @ravex.train_loop(backend=backend, checkpoint_every=10_000, **config)
     def train():
         torch.manual_seed(0)
         model = TinyLM()
@@ -255,8 +256,36 @@ class TestWithTheDecorator:
         loss, ppl = scalars["train/loss"], scalars["train/ppl"]
         assert ppl["step"] == loss["step"]
         assert ppl["value"] == pytest.approx([math.exp(value) for value in loss["value"]], rel=1e-5)
-        # On a CPU: no peak to measure against, so no MFU rather than a guess.
-        assert "perf/mfu" not in scalars
+        # On a CPU: no peak to measure against, so no MFU rather than a guess,
+        # and no TFLOP/s either, which is the same number before the division.
+        assert "perf/mfu" not in scalars and "perf/tflops_per_gpu" not in scalars
+        # Four sequences of six tokens a step (GPU-522); the evaluation
+        # forwards under no_grad are not counted.
+        samples = scalars["perf/samples_per_s_per_gpu"]["value"]
+        assert all(s == pytest.approx(t / 6) for s, t in zip(samples, tokens["value"]))
+        assert scalars["perf/tokens_total_per_gpu"]["value"] == [48.0, 96.0, 144.0]
+        assert all(0 < value <= 1 for value in scalars["perf/goodput"]["value"])
+        for cause in ("data_wait", "checkpoint", "comm"):
+            assert scalars["perf/%s_s" % cause]["step"] == [2, 4, 6]
+        # No price, no cost.
+        assert "perf/usd_per_m_tokens" not in scalars
+
+    @pytest.mark.parametrize("backend", ["torch_save", "moonclip"])
+    def test_a_resume_carries_the_goodput_on(self, storage, backend):
+        """The sums ride in the checkpoint's metadata, so the second execution
+        counts on from the first one's tokens (GPU-522)."""
+        if backend == "moonclip":
+            pytest.importorskip("moonclip")
+        train_tiny(4, backend=backend, metrics_every=2, histograms_every=0)
+        train_tiny(4, backend=backend, metrics_every=2, histograms_every=0)
+        total = ravex.metrics.read(str(storage))["scalars"]["perf/tokens_total_per_gpu"]
+        assert total["step"][-1] == 8 and total["value"][-1] == 192.0
+
+    def test_the_cost_per_token_with_a_price(self, storage, monkeypatch):
+        monkeypatch.setenv("RAVEX_PRICE_PER_HOUR", "3.6")
+        train_tiny(4, metrics_every=2, histograms_every=0)
+        cost = ravex.metrics.read(str(storage))["scalars"]["perf/usd_per_m_tokens"]
+        assert cost["step"] == [2, 4] and all(value > 0 for value in cost["value"])
 
     def test_the_histograms_per_layer(self, storage):
         train_tiny(4, histograms_every=2)

@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Compute metrics (GPU-522).** With nothing in the script but the
+  decorator, every `metrics_every` steps: `perf/goodput` (the share of the
+  run's wall-clock spent on steps that stay in the model, across resumes and
+  crashes) and `perf/goodput_tokens_per_s`; `perf/tflops_per_gpu` beside the
+  MFU; `perf/samples_per_s_per_gpu` and `perf/tokens_total_per_gpu`;
+  `perf/data_wait_s`, `perf/checkpoint_s` and `perf/comm_s`, where the step
+  time goes; and `perf/usd_per_m_tokens` when `RAVEX_PRICE_PER_HOUR` says what
+  the machine costs. The goodput sums ride in the checkpoint's metadata, not
+  its state, so the same training still fingerprints the same.
+
 ## 0.18.0 — 2026-11-26
 
 ### Fixed
