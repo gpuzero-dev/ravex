@@ -1,4 +1,4 @@
-"""GPU-542: a DDP or FSDP resume ends on the same bits as a run never stopped, on 2 to 5 ranks.
+"""GPU-542: a DDP or FSDP resume ends on the same bits as a run never stopped, on 2 to 8 ranks.
 
 Two ranks cannot show it: ``a + b == b + a``. With three, where a gradient sits
 in its bucket decides the order the ring all-reduce adds the ranks' values in,
@@ -137,11 +137,13 @@ def run(cwd, steps, mode, ranks, optimizer):
 
 @pytest.mark.parametrize(
     "mode, ranks, optimizer",
-    [("ddp", ranks, "sgd") for ranks in (2, 3, 4, 5)]
+    # 8 is a whole node, the box most of our users rent: the size a claim of
+    # "exact on one node" has to be proven at.
+    [("ddp", ranks, "sgd") for ranks in (2, 3, 4, 5, 8)]
     + [("ddp", 3, "adam")]
     # SGD without momentum has no tensor state, which FSDP's restore could
     # not take (GPU-543); Adam has some.
-    + [("fsdp", ranks, optimizer) for ranks in (2, 3, 4) for optimizer in ("sgd", "adam")],
+    + [("fsdp", ranks, optimizer) for ranks in (2, 3, 4, 8) for optimizer in ("sgd", "adam")],
 )
 def test_a_resume_reproduces_the_uninterrupted_run(tmp_path, mode, ranks, optimizer):
     if CUDA and ranks > _gpus():
