@@ -129,6 +129,10 @@ def run(cwd, steps, mode, ranks, optimizer):
         # Passed on by hand: the conftest clears every RAVEX_* variable before
         # a test runs, so the children would otherwise fall back to gloo.
         RAVEX_TEST_CUDA="1" if CUDA else "0",
+        # A rank once died at exit with "terminate called without an active
+        # exception" (GPU-547): on a SIGABRT this prints every thread's Python
+        # stack, which is what says whose thread was still running.
+        PYTHONFAULTHANDLER="1",
     )
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=600, env=env)
     assert result.returncode == 0, result.stderr[-3000:]
