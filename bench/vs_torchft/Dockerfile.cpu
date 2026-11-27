@@ -12,6 +12,6 @@
 FROM python:3.12-bookworm
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu \
         --extra-index-url https://pypi.org/simple "torch==2.15.0" \
- && pip install --no-cache-dir "torchft==0.3.1" "moonclip>=0.4.1" numpy PyYAML pytest hatchling
+ && pip install --no-cache-dir "torchft==0.3.1" "moonclip>=0.4.3" numpy PyYAML pytest hatchling
 COPY tests/entry.sh /entry.sh
 ENTRYPOINT ["sh", "/entry.sh"]
