@@ -183,8 +183,9 @@ read by Ravex or from the config file: Moonclip reads them from
 `MOONCLIP_S3_ACCESS_KEY` / `MOONCLIP_S3_SECRET_KEY`, the usual `AWS_*` pair, a
 profile in `~/.aws/credentials`, or the machine's IAM role
 ([Moonclip's README](https://github.com/gpuzero-dev/moonclip#s3)). Restoring
-unpickles part of a checkpoint, so give write access to the bucket only to
-what you would let run code on your training machines.
+reads only tensors and plain data from a checkpoint, never code (GPU-538,
+`SECURITY.md`); write access to the bucket still decides what a resume trains
+on, so give it only to what you trust with your runs.
 
 **More than one GPU or machine.** DDP and FSDP resume on every rank. With FSDP,
 `gather` writes one checkpoint that loads at any world size, bounded by what

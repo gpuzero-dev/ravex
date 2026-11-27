@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import logging
 
+from ravex import _safe_load
+
 logger = logging.getLogger("ravex")
 
 
@@ -148,11 +150,8 @@ def _apply(registry, found, kind, key, model, optimizers, defer_rng: bool) -> bo
     from ravex._interop.convert import align, fit_param_groups, into_snapshot, rename, unify
     from ravex._dist.collectives import unwrap_model
 
-    import torch
-
-    loader = lambda path: torch.load(  # noqa: E731 - one expression, one use
-        path, map_location="cpu", weights_only=False
-    )
+    # Another tool's checkpoint, read without running code from it (GPU-538).
+    loader = _safe_load.load
 
     unified = unify(found, loader)
     live = list(unwrap_model(model).state_dict())

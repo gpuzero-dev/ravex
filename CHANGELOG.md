@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **A resume no longer runs code from the checkpoint (GPU-538).** The
+  `torch_save` backend and the import of other tools' checkpoints read them
+  with `torch.load(..., weights_only=False)`, so whoever could write to the
+  checkpoint directory or bucket could run code in the process that resumed.
+  They now go through `ravex._safe_load.load`: `weights_only=True`, plus
+  NumPy's arrays and dtypes for NumPy's RNG state, and `UnsafeCheckpoint` on
+  anything else. Under Moonclip the same comes from Moonclip's own reader,
+  in the release that carries GPU-538.
+
 ## 0.20.1 — 2026-11-27
 
 ### Fixed

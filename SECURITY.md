@@ -17,11 +17,15 @@ is released as a new version, never backported.
 
 ## What to know before you rely on it
 
-- **Restoring runs code from the checkpoint.** Optimizer and scheduler state
-  is restored with `torch.load(..., weights_only=False)` or, under Moonclip,
-  partly unpickled. Whoever can write to the checkpoint directory or bucket
-  can therefore run code in the process that resumes from it. Give write
-  access only to what you would let run code on your training machines.
+- **Restoring builds tensors and plain data only (GPU-538).** The
+  `torch_save` backend and the checkpoints of other tools Ravex resumes from
+  are read with `torch.load(..., weights_only=True)`, which also admits
+  NumPy's arrays and dtypes, for NumPy's RNG state, and nothing more; under
+  Moonclip, its own reader does the same (Moonclip's `SECURITY.md`).
+  Anything else fails the resume with `UnsafeCheckpoint`, naming the file:
+  there is no unrestricted fallback. Write access to the checkpoint
+  directory or bucket still decides what a resume trains on, so give it only
+  to what you trust with your runs.
 - Ravex never reads storage credentials itself: Moonclip does, from the
   environment, a profile or the machine's role.
 - Nothing is sent anywhere unless a metrics endpoint is configured

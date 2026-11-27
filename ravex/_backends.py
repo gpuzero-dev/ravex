@@ -41,6 +41,8 @@ from abc import ABC, abstractmethod
 from concurrent.futures import Future, ThreadPoolExecutor
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from ravex import _safe_load
+
 logger = logging.getLogger("ravex")
 
 
@@ -981,7 +983,7 @@ class TorchSaveBackend(CheckpointBackend):
         files = self._files()
         if not files:
             return None
-        state = torch.load(files[-1], map_location="cpu", weights_only=False)
+        state = _safe_load.load(files[-1])
         self._loaded_metadata[_step_of(files[-1])] = state.pop("_ravex_metadata", None) or {}
         return state
 
@@ -1000,7 +1002,7 @@ class TorchSaveBackend(CheckpointBackend):
         path = os.path.join(self.directory, f"step_{step:012d}.pt")
         if not os.path.exists(path):
             return None
-        state = torch.load(path, map_location="cpu", weights_only=False)
+        state = _safe_load.load(path)
         self._loaded_metadata[step] = state.pop("_ravex_metadata", None) or {}
         return state
 

@@ -34,6 +34,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from ravex import _safe_load
+
 
 class DcpUnavailable(Exception):
     """This torch cannot read a distributed checkpoint offline.
@@ -147,7 +149,7 @@ def _read_the_long_way(path: str) -> Dict[str, Any]:
     os.close(handle)
     try:
         dcp_to_torch_save(path, target)
-        return torch.load(target, map_location="cpu", weights_only=False)
+        return _safe_load.load(target)
     finally:
         try:
             os.unlink(target)
