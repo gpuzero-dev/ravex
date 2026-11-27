@@ -247,7 +247,10 @@ Python 3.11 and later, each for as long as CPython supports it.
   its gradient buckets as the stopped run had them, which Ravex does unless
   the wrapper has a comm hook, `static_graph`, `find_unused_parameters` or
   mixed precision; with more than two ranks the order of the sum then differs
-  on the first resumed step. Kernels that are not deterministic by themselves
+  on the first resumed step. Every rank gets its own random state back, so
+  ranks that draw from their own seed resume their own draws; it is kept
+  beside the store, so a rank whose machine and disk are gone comes back with
+  rank 0's and says so. Kernels that are not deterministic by themselves
   (atomics, autotuning) differ between any two runs, resumed or not.
 - An `IterableDataset` has no index sampler, so its position cannot be
   replayed; everything else is still restored.

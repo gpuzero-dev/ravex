@@ -85,12 +85,31 @@ def train():
         optimizer = torch.optim.SGD(model.parameters(), lr=0.1)
     x = torch.randn(4096, 32) * 10
     data = TensorDataset(x, x.sum(dim=1, keepdim=True))
-    sampler = DistributedSampler(data, seed=0)
-    loader = DataLoader(data, batch_size=8, sampler=sampler)
+    if os.environ.get("DATA") == "rng":
+        # Every rank draws its own batches from its own seed, as random
+        # augmentation or a per-rank sampler does: the resume has to give each
+        # rank back its own generator, not rank 0's (GPU-548).
+        torch.manual_seed(1000 + dist.get_rank())
+
+        def batches():
+            # A loop with no DataLoader stops on its own step count, as nanoGPT does.
+            while ravex.step() < int(os.environ["STEPS"]):
+                picks = torch.randint(len(data), (8,))
+                yield x[picks], x[picks].sum(dim=1, keepdim=True)
+
+        epochs = [batches()]
+    else:
+        sampler = DistributedSampler(data, seed=0)
+        loader = DataLoader(data, batch_size=8, sampler=sampler)
+
+        def epoch_of(epoch):
+            sampler.set_epoch(epoch)
+            return iter(loader)
+
+        epochs = (epoch_of(epoch) for epoch in range(10))
     started = None
-    for epoch in range(10):
-        sampler.set_epoch(epoch)
-        for inputs, targets in loader:
+    for epoch_batches in epochs:
+        for inputs, targets in epoch_batches:
             if started is None:
                 started = ravex.step()
                 if dist.get_rank() == 0:
@@ -119,12 +138,12 @@ if __name__ == "__main__":
 '''
 
 
-def run(cwd, steps, mode, ranks, optimizer):
+def run(cwd, steps, mode, ranks, optimizer, data="sampler"):
     command = [
         sys.executable, "-m", "torch.distributed.run", "--nproc-per-node", str(ranks), "train.py"
     ]
     env = dict(
-        os.environ, STEPS=str(steps), MODE=mode, OPT=optimizer, MOONCLIP_FSYNC="0",
+        os.environ, STEPS=str(steps), MODE=mode, OPT=optimizer, DATA=data, MOONCLIP_FSYNC="0",
         OMP_NUM_THREADS="1", CUBLAS_WORKSPACE_CONFIG=":4096:8",
         # Passed on by hand: the conftest clears every RAVEX_* variable before
         # a test runs, so the children would otherwise fall back to gloo.
@@ -163,5 +182,25 @@ def test_a_resume_reproduces_the_uninterrupted_run(tmp_path, mode, ranks, optimi
 
     assert reference[-1].split()[1] == "12"
     # A second run that started over would end on the same weights too.
+    assert int(resumed[0].split()[1]) > 0, resumed
+    assert resumed[-1] == reference[-1]
+
+
+@pytest.mark.parametrize("ranks", [3, 8])
+def test_a_resume_gives_each_rank_its_own_random_state(tmp_path, ranks):
+    """GPU-548: a DDP checkpoint is written by rank 0 alone, and it used to carry
+    only rank 0's random state. Ranks that draw from their own seed then resumed
+    with rank 0's generator, drew rank 0's batches, and the run was another."""
+    if CUDA and ranks > _gpus():
+        pytest.skip("%d ranks need %d GPUs, this machine has %d" % (ranks, ranks, _gpus()))
+    whole, stopped = tmp_path / "whole", tmp_path / "stopped"
+    for directory in (whole, stopped):
+        directory.mkdir()
+        (directory / "train.py").write_text(SCRIPT, encoding="utf-8")
+
+    reference = run(whole, 12, "ddp", ranks, "sgd", data="rng")
+    assert run(stopped, 6, "ddp", ranks, "sgd", data="rng")[-1].split()[1] == "6"
+    resumed = run(stopped, 12, "ddp", ranks, "sgd", data="rng")
+
     assert int(resumed[0].split()[1]) > 0, resumed
     assert resumed[-1] == reference[-1]

@@ -625,13 +625,21 @@ class ObjectRegistry:
                 state["dataloaders"][key] = tracked.state()
 
         if track_rng:
-            kept = self._rng_at_step
-            if kept is not None and kept[0] == self.step_count:
-                state["rng"] = kept[1]
-            else:
-                state["rng"] = self._collect_rng(torch)
+            state["rng"] = self.rng_for_checkpoint()
 
         return state
+
+    def rng_for_checkpoint(self) -> Dict[str, Any]:
+        """The random state a checkpoint of the current step holds: the one the
+        step left (see :meth:`keep_rng_at_step`), or the live one when no step
+        kept it. Every rank asks this, rank 0 for the checkpoint and every rank
+        for its own record beside it (GPU-548)."""
+        import torch
+
+        kept = self._rng_at_step
+        if kept is not None and kept[0] == self.step_count:
+            return kept[1]
+        return self._collect_rng(torch)
 
     def keep_rng_at_step(self) -> None:
         """Remember the RNG as the step just counted left it (GPU-367).

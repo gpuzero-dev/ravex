@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Every rank of a DDP job resumes with its own random state (GPU-548).**
+  A replicated checkpoint is written by rank 0 alone, and it carried rank
+  0's generators; on resume every rank got them. Ranks that draw from their
+  own seed (`torch.manual_seed(seed + rank)`, random augmentation, a sampler
+  of their own) then drew rank 0's batches, and the run was another one -
+  found by an 8-node kill benchmark that resumed at the right step every time
+  and matched 28 steps of 400. Each rank now records its own state at every
+  checkpoint, beside the store (`<storage.path>.rng`) and with no collective,
+  so the save on the way out still works when the peers are gone; on resume
+  each rank takes its own back for the checkpoint's step. A rank that finds
+  none - its machine and disk are gone - continues with rank 0's and logs it.
+  `tests/distributed/test_ddp_buckets_nodes.py` proves it on 3 and 8 ranks.
+
 ## 0.21.1 — 2026-11-27
 
 ### Fixed

@@ -307,6 +307,9 @@ class ResumeManager:
         self.skipped: List[Tuple[int, str]] = []
         self.notice: Optional[str] = None
         self._failed_here: List[int] = []
+        #: Whether the checkpoint being resumed lives in one store per rank; set
+        #: by :meth:`try_resume`.
+        self._per_rank = False
 
     def try_resume(self, defer_rng: bool = False, per_rank: bool = False) -> bool:
         """Restore a checkpoint into the live objects. The newest, or a named one.
@@ -317,6 +320,10 @@ class ResumeManager:
         makes "the latest" a question the ranks have to answer together.
         """
         self.attempted = True
+        # A per-rank store holds each rank's own random state already; only a
+        # checkpoint rank 0 wrote for everybody needs each rank's record beside
+        # it (GPU-548).
+        self._per_rank = per_rank
 
         requested = getattr(self.config, "resume_step", None)
         if requested is not None:
@@ -1201,6 +1208,35 @@ class ResumeManager:
             _several_runs(seen),
         )
 
+    def _own_rng(self, state: Dict[str, Any], step: int) -> Dict[str, Any]:
+        """The checkpoint with this rank's own random state in it (GPU-548).
+
+        A checkpoint rank 0 wrote for every rank carries rank 0's generators.
+        Each rank recorded its own beside the store at the same step; a rank
+        that finds none says so and goes on with rank 0's, which changes its
+        random draws and nothing else.
+        """
+        from ravex._dist.collectives import get_rank, get_world_size
+
+        if self._per_rank or self.config is None or get_world_size() <= 1:
+            return state
+        if not getattr(self.config, "track_rng", True) or "rng" not in state:
+            return state
+        from ravex import _rank_rng
+
+        rank = get_rank()
+        own = _rank_rng.load(self.config.storage.path, rank, int(step))
+        if own is not None:
+            return dict(state, rng=own)
+        if rank != 0:
+            logger.warning(
+                "Rank %d has no random state of its own for step %s (none in %s): it "
+                "continues with rank 0's, so its random draws differ from the run that "
+                "stopped - its data order too, if it draws its own batches",
+                rank, step, _rank_rng.directory(self.config.storage.path),
+            )
+        return state
+
     def _apply(self, state: Dict[str, Any], defer_rng: bool) -> bool:
         version = state.get("ravex_version", 0)
         if version > STATE_VERSION:
@@ -1213,6 +1249,7 @@ class ResumeManager:
             return False
 
         step = state.get("step", 0)
+        state = self._own_rng(state, step)
         self.registry.restore_state(state, defer_rng=defer_rng)
         self.restored_step = self.registry.step_count
         # Read, not applied. A reshard reaches here with a stitched state whose
