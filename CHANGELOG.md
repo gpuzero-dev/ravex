@@ -13,6 +13,11 @@
   rebuilds it before the first forward. Proven on three gloo ranks in
   `tests/distributed/test_ddp_buckets_nodes.py`; the two-rank test could not
   see it.
+- **An FSDP resume with an optimizer that holds no tensors (GPU-543).** SGD
+  without momentum keeps no state but its hyperparameters, and torch's
+  restore, which reads the device off that state, stopped on "Expected
+  device to be set": the run refused to resume. The model is restored and the
+  hyperparameters put back group by group.
 
 ## 0.21.0 — 2026-11-27
 

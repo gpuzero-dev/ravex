@@ -1347,9 +1347,28 @@ def apply_sharded_state(model, optimizers, model_state, optimizer_state) -> None
     Every rank passes the full state it read from storage, so no broadcast is
     needed — the ranks are reading identical bytes from the same checkpoint.
     """
-    from torch.distributed.checkpoint.state_dict import StateDictOptions, set_state_dict
+    import torch
+    from torch.distributed.checkpoint.state_dict import (
+        StateDictOptions,
+        set_model_state_dict,
+        set_state_dict,
+    )
 
     options = StateDictOptions(full_state_dict=True, cpu_offload=True)
+    tensors = []
+    torch.utils._pytree.tree_map_only(
+        torch.Tensor, tensors.append, (optimizer_state or {}).get("state", {})
+    )
+    if not any(t.dim() > 0 for t in tensors):
+        # An optimizer with no tensor state - SGD without momentum - made torch
+        # stop on "Expected device to be set": it reads the device off that
+        # state, and every FSDP resume of such a run failed (GPU-543). Its
+        # hyperparameters are all there is to put back, group by group.
+        set_model_state_dict(model, model_state, options=options)
+        live = [group for optimizer in optimizers for group in optimizer.param_groups]
+        for group, saved in zip(live, (optimizer_state or {}).get("param_groups", [])):
+            group.update({key: value for key, value in saved.items() if key != "params"})
+        return
     set_state_dict(
         model,
         list(optimizers),
