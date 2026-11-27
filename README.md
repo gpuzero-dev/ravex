@@ -243,7 +243,12 @@ Python 3.11 and later, each for as long as CPython supports it.
 - Under HuggingFace `Trainer` and Lightning the state comes back exactly, but
   with shuffling and dropout on, the resumed run sees a different random draw,
   because the framework drives the dataloader and the RNG on its own schedule.
-  Plain loops, DDP and FSDP replay exactly.
+  Plain loops, DDP and FSDP replay exactly. Under DDP that takes rebuilding
+  its gradient buckets as the stopped run had them, which Ravex does unless
+  the wrapper has a comm hook, `static_graph`, `find_unused_parameters` or
+  mixed precision; with more than two ranks the order of the sum then differs
+  on the first resumed step. Kernels that are not deterministic by themselves
+  (atomics, autotuning) differ between any two runs, resumed or not.
 - An `IterableDataset` has no index sampler, so its position cannot be
   replayed; everything else is still restored.
 - A sharded model gets no final checkpoint at exit, since collecting one is a

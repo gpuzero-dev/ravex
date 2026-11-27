@@ -24,6 +24,7 @@ import weakref
 from collections import OrderedDict
 from typing import Any, Dict, List, Optional, Set, Tuple
 
+from ravex._dist import ddp_buckets
 from ravex._dist.collectives import (
     apply_local_sharded_state,
     apply_sharded_state,
@@ -537,12 +538,16 @@ class ObjectRegistry:
             "schedulers": {},
             "scalers": {},
             "user_state": {},
+            "ddp_buckets": {},
             "dataloaders": {},
             "sharded": {},
         }
 
         for key, model in self.keyed_models():
             state["models"][key] = unwrap_model(model).state_dict()
+            buckets = ddp_buckets.layout(model)
+            if buckets is not None:
+                state["ddp_buckets"][key] = buckets
 
         for key, optimizer in self.keyed_optimizers():
             # One optimizer refusing to describe itself must not cost the
@@ -743,6 +748,9 @@ class ObjectRegistry:
                 unmatched_models.append((key, model))
                 continue
             unwrap_model(model).load_state_dict(saved_models[key])
+            # Every rank restores the same step, so every rank takes this
+            # collective together (GPU-542).
+            ddp_buckets.rebuild(model, state.get("ddp_buckets", {}).get(key))
 
         saved_optimizers = state.get("optimizers", {})
         for key, optimizer in self.keyed_optimizers():

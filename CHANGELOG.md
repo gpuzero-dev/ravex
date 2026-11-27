@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **A DDP resume on more than two ranks replays exactly (GPU-542).** DDP
+  regroups its gradient buckets after the first backward, and a resumed
+  process reduced its first step with the initial layout; with three or more
+  ranks the position of a gradient in its bucket decides the order the ring
+  all-reduce adds the ranks in, so the run drifted by a rounding error from
+  that step on. A checkpoint now records the rebuilt layout and a resume
+  rebuilds it before the first forward. Proven on three gloo ranks in
+  `tests/distributed/test_ddp_buckets_nodes.py`; the two-rank test could not
+  see it.
+
 ## 0.21.0 — 2026-11-27
 
 ### Added
