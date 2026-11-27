@@ -172,6 +172,13 @@ and run anywhere.
    phase ends, has already sent everything it wrote. The logs follow at the
    end of each arm.
 
+   An arm launched again into the same results - a retry after a hang -
+   starts clean: the earlier attempt's folder and its lines of
+   `controller.jsonl` move to `results/<phase>/attempts/<arm>-<n>/`, which
+   `make_table.py` does not read, and on the hosts the new attempt writes
+   under `runs/<phase>/attempt-<n>/`, so it neither appends to the old events
+   nor resumes from the old store (GPU-545). Nothing is deleted.
+
 ## Phase (a): the runbook
 
 Phase (a) is the smoke run, and the only one planned soon. Its budget is

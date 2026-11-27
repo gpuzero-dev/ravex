@@ -7,7 +7,9 @@ arguments every node gets, and the faults: ``kill`` a node, or start a
 ``join``-er, when an arm reaches a local step. The same schedule applies to
 every arm it names, at the same step, so every arm sees the same fault.
 
-**What the controller does, in order.** For each arm it starts the
+**What the controller does, in order.** For an arm already in the results
+it first sets the earlier attempt aside (``Controller.set_aside``), so a
+retry neither appends to its events nor resumes from its store. For each arm it starts the
 coordinator on the host of the arm's node 0 - ``ravex rendezvous`` for Ravex,
 ``torchft_lighthouse`` for torchft - and then every starting node at once, so
 no node waits on a human and the meter runs on all of them together. Then it
@@ -169,6 +171,9 @@ class Arm:
     nodes: List[Node] = field(default_factory=list)
     coordinator: Optional[hostlib.Process] = None
     epoch: int = 0
+    #: The arm's folder on its hosts: the run's, or one of its own for an arm
+    #: launched again into the same results (see :meth:`Controller.set_aside`).
+    tag: str = "runs/run"
     token: str = field(default_factory=lambda: secrets.token_hex(32))
 
     @property
@@ -176,20 +181,35 @@ class Arm:
         return [n.number for n in self.nodes if not n.joiner]
 
 
+def _arm_of(line: str) -> Optional[str]:
+    """The arm a line of ``controller.jsonl`` is about, if it names one."""
+    try:
+        return json.loads(line).get("arm")
+    except ValueError:
+        return None
+
+
 class Controller:
     def __init__(self, phase: Dict[str, Any], hosts: Dict[str, hostlib.Host], results: str) -> None:
         self.phase, self.hosts, self.results = phase, hosts, results
         os.makedirs(results, exist_ok=True)
         self.tag = "runs/" + os.path.basename(os.path.normpath(results))
-        self._log = open(os.path.join(results, "controller.jsonl"), "a", encoding="utf-8")
         self.arms: List[Arm] = []
+        attempts: Dict[str, int] = {}
         for spec in phase["arms"]:
             if spec["kind"] not in KINDS:
                 raise ValueError("arm %s: kind is one of %s" % (spec["name"], ", ".join(KINDS)))
             arm = Arm(spec["name"], spec["kind"], spec)
+            attempt = self.set_aside(arm.name)
+            attempts[arm.name] = attempt
+            arm.tag = self.tag if attempt == 1 else "%s/attempt-%d" % (self.tag, attempt)
             for number, name in enumerate(spec["nodes"]):
-                arm.nodes.append(Node(arm.name, number, hosts[name], joiner=False, tag=self.tag))
+                arm.nodes.append(Node(arm.name, number, hosts[name], joiner=False, tag=arm.tag))
             self.arms.append(arm)
+        self._log = open(os.path.join(results, "controller.jsonl"), "a", encoding="utf-8")
+        for name, attempt in attempts.items():
+            if attempt > 1:
+                self.note("attempt", arm=name, attempt=attempt)
         # Two arms on one GPU would each measure half a GPU, if they fit at
         # all: arms that share hosts are run one at a time, with --only.
         owners: Dict[str, str] = {}
@@ -203,6 +223,37 @@ class Controller:
         self.faults = parse_faults(phase.get("faults", []), [a.name for a in self.arms])
         self.train_args = [str(a) for a in phase.get("train_args", [])]
         self.steps = int(option(self.train_args, "--steps", "300"))
+
+    def set_aside(self, arm: str) -> int:
+        """Move an earlier attempt at the arm out of the table's way; return this attempt's number.
+
+        GPU-545: launching an arm again into the same results - the usual
+        retry, as torchft's in phase (a) - appended its events to the first
+        attempt's, here and on the hosts, and Ravex resumed from the first
+        attempt's store. The earlier events and the arm's lines of
+        ``controller.jsonl`` go to ``attempts/<arm>-<n>/``, two levels down,
+        where ``make_table.py`` does not look, and nothing is deleted; the new
+        attempt gets a folder of its own on the hosts.
+        """
+        here = os.path.join(self.results, arm)
+        aside = os.path.join(self.results, "attempts")
+        earlier = len([d for d in (os.listdir(aside) if os.path.isdir(aside) else [])
+                       if d.rsplit("-", 1)[0] == arm])
+        if not os.path.exists(here):
+            return earlier + 1
+        target = os.path.join(aside, "%s-%d" % (arm, earlier + 1))
+        os.makedirs(aside, exist_ok=True)
+        os.rename(here, target)
+        log = os.path.join(self.results, "controller.jsonl")
+        if os.path.exists(log):
+            with open(log, encoding="utf-8") as handle:
+                lines = handle.readlines()
+            mine = [line for line in lines if _arm_of(line) == arm]
+            with open(os.path.join(target, "controller.jsonl"), "w", encoding="utf-8") as handle:
+                handle.writelines(mine)
+            with open(log, "w", encoding="utf-8") as handle:
+                handle.writelines(line for line in lines if _arm_of(line) != arm)
+        return earlier + 2
 
     def note(self, event: str, **fields: Any) -> None:
         record = {"t": time.time(), "event": event}
@@ -292,7 +343,7 @@ class Controller:
         else:
             command = [tool(head, "ravex"), "rendezvous", "--port", str(port)]
             env = {"RAVEX_JOB_TOKEN": arm.token}
-        arm.coordinator = head.start(command, env, "%s/%s/coordinator-%d.log" % (self.tag, arm.name, arm.epoch))
+        arm.coordinator = head.start(command, env, "%s/%s/coordinator-%d.log" % (arm.tag, arm.name, arm.epoch))
         self.note("coordinator", arm=arm.name, host=head.name, epoch=arm.epoch)
 
     def start_node(self, arm: Arm, node: Node, steps: Optional[int] = None) -> None:
@@ -332,7 +383,7 @@ class Controller:
     def fire(self, arm: Arm, fault: Fault, step: int) -> None:
         if fault.action == "join":
             node = Node(arm.name, max(n.number for n in arm.nodes) + 1, self.hosts[fault.host], joiner=True,
-                        tag=self.tag)
+                        tag=arm.tag)
             arm.nodes.append(node)
             self.note("fault", arm=arm.name, action="join", node=node.number, at_step=fault.at_step, step=step,
                       host=node.host.name)
@@ -417,7 +468,7 @@ class Controller:
                 node.host.fetch(node.log, os.path.join(base, "stdout.log"))
                 node.host.fetch(node.file("ravex.log"), os.path.join(base, "ravex.log"))
             for epoch in range(arm.epoch + 1):
-                arm.nodes[0].host.fetch("%s/%s/coordinator-%d.log" % (self.tag, arm.name, epoch),
+                arm.nodes[0].host.fetch("%s/%s/coordinator-%d.log" % (arm.tag, arm.name, epoch),
                                         os.path.join(self.results, arm.name, "coordinator-%d.log" % epoch))
 
 

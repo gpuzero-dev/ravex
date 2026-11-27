@@ -183,3 +183,31 @@ def test_phase_b_runs_the_clock_rows_on_their_own_pods_with_the_clock_closing_th
             assert controller.option(command, "--inner-steps") == "100000"
         else:
             assert controller.option(command, "--inner-steps") == "250"
+
+
+def test_an_arm_launched_again_into_the_same_results_sets_the_first_attempt_aside(tmp_path):
+    # GPU-545: the retry appended its events to the first attempt's and
+    # resumed from its store; now it starts clean, and nothing is deleted.
+    import json
+    results = tmp_path / "phase-b"
+    (results / "arm" / "node0").mkdir(parents=True)
+    (results / "arm" / "node0" / "events.jsonl").write_text('{"event": "step", "step": 1}\n')
+    (results / "controller.jsonl").write_text(
+        json.dumps({"event": "fault", "arm": "arm"}) + "\n" + json.dumps({"event": "start", "arm": "other"}) + "\n")
+    c = make(results)
+    aside = results / "attempts" / "arm-1"
+    assert (aside / "node0" / "events.jsonl").read_text() == '{"event": "step", "step": 1}\n'
+    assert not (results / "arm").exists()
+    assert [json.loads(line)["arm"] for line in (aside / "controller.jsonl").read_text().splitlines()] == ["arm"]
+    kept = [json.loads(line) for line in (results / "controller.jsonl").read_text().splitlines()]
+    assert [(r["event"], r["arm"]) for r in kept] == [("start", "other"), ("attempt", "arm")]
+    node = c.arms[0].nodes[0]
+    assert node.events == "runs/phase-b/attempt-2/arm/node0/events.jsonl"
+    assert c.environment(c.arms[0], node)["RAVEX_STORAGE_PATH"] == "/w/runs/phase-b/attempt-2/arm/node0/store"
+    c._log.close()
+    # A third launch, after the second wrote something: its own folders again.
+    (results / "arm" / "node0").mkdir(parents=True)
+    third = make(results)
+    assert (results / "attempts" / "arm-2").is_dir()
+    assert third.arms[0].nodes[0].events == "runs/phase-b/attempt-3/arm/node0/events.jsonl"
+    third._log.close()
