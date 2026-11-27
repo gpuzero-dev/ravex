@@ -1,0 +1,23 @@
+# The Ravex arm that closes its rounds on the clock (GPU-545): the case Ravex
+# exists for, four nodes with different GPUs in two regions.
+#
+# Everything is the primary arm's (`ravex_primary.yaml`) but the round. Here
+# every node trains for `outer_round_seconds` and sends what it did, however
+# many steps that was, so the slow GPU stops holding the fast ones back; the
+# phase gives this arm an H of 100000 so that the clock, never the count,
+# closes the round. 60 s is about what 250 steps take on the faster GPU
+# (0.21 s a step in phase (a)), so the rounds are as long as the counted
+# arms' and the two rows move the same bytes per hour.
+#
+# torchft has nothing that closes on the clock: its row on the same pods
+# (`torchft-hetero`) keeps H = 250 and waits for the slowest replica at every
+# sync, which is the difference this pair of rows measures.
+backend: moonclip
+delta: true
+checkpoint_every: 10
+outer_save_dtype: null
+outer_overlap: false
+outer_combine: mean
+outer_round_seconds: 60
+outer_deadline: 1200
+metrics_every: 10

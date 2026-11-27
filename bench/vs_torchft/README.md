@@ -49,6 +49,23 @@ its training on disk and the other does not:
   setting), the last two kept: what Ravex's primary arm has, a run that
   survives every node going at once.
 
+Phase (b) adds two rows for the case Ravex exists for, nodes that are not
+alike (GPU-545). They run one after the other, with `--only`, on four pods of
+their own (`h-eu0` ... `h-us1`), two regions and **at least two GPU models**
+among them, so that one node is clearly slower:
+
+- `ravex-clock`: the primary arm with rounds closed on the clock,
+  `outer_round_seconds` 60 and an H too large to be reached
+  (`configs/ravex_clock.yaml`): every node sends what it did in the minute,
+  and the slow one costs only its share of the steps.
+- `torchft-hetero`: the torchft arm at H = 250 on the same pods, so its syncs
+  wait for the slowest replica, as torchft does.
+
+With a round on the clock the nodes' step counts differ, and the table's
+committed steps for those rounds are the midpoint of the slowest and the
+fastest node's (`train_ravex.py`), an estimate: read the tokens of the
+`ravex-clock` row from each node's events, not from that column.
+
 **The clock starts at the end of each arm's first step** (`make_table.py`).
 torchft connects its `Manager` before the arm's `start` event, while Ravex
 builds its outer loop - the rendezvous, the starting state - inside the first

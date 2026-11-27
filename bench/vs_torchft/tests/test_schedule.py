@@ -158,3 +158,28 @@ def test_a_remote_start_backgrounds_the_command_alone(monkeypatch):
         done = subprocess.run(["bash", "-c", script.replace("python train.py", "sleep 5")],
                               capture_output=True, timeout=3)
         assert done.stdout.strip().isdigit(), done
+
+
+def test_phase_b_runs_the_clock_rows_on_their_own_pods_with_the_clock_closing_the_round(tmp_path):
+    # GPU-545: the two heterogeneous rows share four pods, so they load only
+    # one at a time, and the clock arm's H must be past any round's reach.
+    import json
+    with open(os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "configs", "phase_b.json")) as f:
+        spec = json.load(f)
+    names = {n for a in spec["arms"] for n in a["nodes"]} | {f["host"] for f in spec["faults"] if f.get("host")}
+    machines = {n: hostlib.Host(name=n, address="10.0.0.%d" % i, workdir="/w", ssh="root@x")
+                for i, n in enumerate(sorted(names), 1)}
+    with pytest.raises(ValueError, match="--only"):
+        controller.Controller(spec, machines, str(tmp_path / "all"))
+    for only in ("ravex-clock", "torchft-hetero"):
+        one = dict(spec, arms=[a for a in spec["arms"] if a["name"] == only],
+                   faults=[f for f in spec["faults"] if f["arm"] == only])
+        c = controller.Controller(one, machines, str(tmp_path / only))
+        arm = c.arms[0]
+        assert [f.action for f in c.faults] == ["join", "kill"]
+        command = c.trainer(arm, arm.nodes[0])
+        if only == "ravex-clock":
+            assert c.environment(arm, arm.nodes[0])["RAVEX_CONFIG"].endswith("/configs/ravex_clock.yaml")
+            assert controller.option(command, "--inner-steps") == "100000"
+        else:
+            assert controller.option(command, "--inner-steps") == "250"
