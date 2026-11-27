@@ -133,7 +133,11 @@ with it. The full list, and how each is measured, is in
 
 When "noticed on its own" is a guess, such as two models of which only one
 trains, or an optimizer built before the function was entered, name it with
-`ravex.track(model, optimizer)`. The one moment a checkpoint is consistent,
+`ravex.track(model, optimizer)`. What is not a torch object, such as an EMA
+whose shadow weights sit in a dict, the best metric so far or an
+early-stopping counter, Ravex cannot notice at all: declare it with
+`ravex.track(state=stats)`, a dict it updates in place on resume or an object
+with `state_dict()` and `load_state_dict()`. The one moment a checkpoint is consistent,
 the top of an iteration, Ravex takes from the `DataLoader` iterator or, in a
 loop without one, from the first forward of the trained model after each
 step; `ravex.batch_boundary()` hands it over by hand where neither is seen.

@@ -119,6 +119,10 @@ class ObjectRegistry:
         self._dataloaders = _WeakSet()
         self._schedulers = _WeakSet()
         self._scalers = _WeakSet()
+        # Strong, unlike the rest: a dict - the usual way to hand over loop
+        # values - cannot be weakly referenced, and only what `track(state=)`
+        # was given lands here, never something noticed on its own (GPU-540).
+        self._user_states: List[Any] = []
 
         self.step_count: int = 0
         self.resumed: bool = False
@@ -162,6 +166,20 @@ class ObjectRegistry:
 
     def register_scaler(self, scaler: Any) -> None:
         self._scalers.add(scaler)
+
+    def register_user_state(self, obj: Any) -> None:
+        """State the script declared with ``track(state=)``: an object with
+        ``state_dict()``/``load_state_dict()``, or a dict restored in place."""
+        if not isinstance(obj, dict) and not (
+            callable(getattr(obj, "state_dict", None))
+            and callable(getattr(obj, "load_state_dict", None))
+        ):
+            raise TypeError(
+                "ravex.track(state=...) takes a dict, or an object with state_dict() "
+                "and load_state_dict(); got %s" % type(obj).__name__
+            )
+        if not any(held is obj for held in self._user_states):
+            self._user_states.append(obj)
 
     def pin_live(self) -> None:
         """Hold strong references to what a checkpoint would save right now.
@@ -518,6 +536,7 @@ class ObjectRegistry:
             "optimizers": {},
             "schedulers": {},
             "scalers": {},
+            "user_state": {},
             "dataloaders": {},
             "sharded": {},
         }
@@ -586,6 +605,14 @@ class ObjectRegistry:
                 state["scalers"][f"scaler_{index}"] = scaler.state_dict()
             except Exception as exc:  # pragma: no cover - defensive
                 logger.warning("Could not collect scaler state: %s", exc)
+
+        # By position, like the schedulers: the script declares them in the
+        # same order on every run. A dict is copied, not held - the backend
+        # copies the tensors in it, but the next step may rebind its keys.
+        for index, held in enumerate(self._user_states):
+            state["user_state"][f"state_{index}"] = (
+                dict(held) if isinstance(held, dict) else held.state_dict()
+            )
 
         for key, dataloader in self.keyed_dataloaders():
             tracked = getattr(dataloader, "_ravex_sampler", None)
@@ -794,6 +821,18 @@ class ObjectRegistry:
                     scaler.load_state_dict(saved_scalers[key])
                 except Exception as exc:
                     logger.warning("Could not restore scaler %s: %s", key, exc)
+
+        saved_user = state.get("user_state", {})
+        for index, held in enumerate(self._user_states):
+            key = f"state_{index}"
+            if key not in saved_user:
+                continue
+            # A dict is updated in place, because the script holds that very
+            # dict: rebinding it here would restore nothing the loop can see.
+            if isinstance(held, dict):
+                held.update(saved_user[key])
+            else:
+                held.load_state_dict(saved_user[key])
 
         saved_dataloaders = state.get("dataloaders", {})
         for key, dataloader in self.keyed_dataloaders():

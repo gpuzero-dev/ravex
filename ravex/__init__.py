@@ -232,6 +232,7 @@ def track(
     *,
     scheduler: object = None,
     scaler: object = None,
+    state: object = None,
 ) -> None:
     """Name an object explicitly, when leaving it to be noticed is not enough.
 
@@ -243,6 +244,21 @@ def track(
     Registering something twice is harmless. Registering an optimizer through
     this attaches the same step hook the automatic path attaches, so the step
     count keeps working — an optimizer tracked here and stepped is counted.
+
+    ``state`` is what Ravex cannot notice, because it is not a torch object:
+    an EMA that keeps its shadow weights in a dict, the best metric so far, an
+    early-stopping counter (GPU-540). Pass an object with ``state_dict()`` and
+    ``load_state_dict()``, or a dict of tensors and plain values, which a
+    resume updates in place - keep the values in it, not in local variables::
+
+        stats = {"best": float("inf"), "patience": 0}
+        ravex.track(state=stats)
+        ravex.track(state=ema.shadow)
+
+    Track it before the first ``optimizer.step()``, which is when a resume
+    restores. Like everything in a checkpoint it is read back as tensors and
+    plain data only (GPU-538): an object of your own class inside it fails
+    the resume rather than running code from the store.
 
     Raises if there is no active ``train_loop``: the alternative is recording
     objects into a registry that is about to be replaced, which looks like it
@@ -272,6 +288,8 @@ def track(
         registry.register_scheduler(scheduler)
     if scaler is not None:
         registry.register_scaler(scaler)
+    if state is not None:
+        registry.register_user_state(state)
 
 
 def save_dtype(target: Any, dtype: Optional[str] = None) -> Any:

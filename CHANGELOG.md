@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **`ravex.track(state=...)`: the state a resume used to lose (GPU-540).**
+  An EMA kept as a dict of tensors, the best metric, an early-stopping
+  counter: none is a torch object, so Ravex never saved them, and a resumed
+  run started the average over and forgot its best. Pass a dict, updated in
+  place on resume, or an object with `state_dict()`/`load_state_dict()`. It
+  is read back like the rest of the checkpoint, tensors and plain data only.
+
 ## 0.20.2 — 2026-11-27
 
 ### Security
