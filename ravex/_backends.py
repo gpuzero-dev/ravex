@@ -570,7 +570,11 @@ class MoonclipBackend(CheckpointBackend):
         if self.fingerprints is None or step is None or step in self.fingerprints:
             return 0.0, 0.0
         started = time.perf_counter()
-        snapshots = self._manager.list_snapshots()  # waits for the writer
+        # list_snapshots() stopped waiting for a save in flight in GPU-517: a
+        # previous step still being written was not listed, went unfingerprinted
+        # and could be retained away before its entry asked again (GPU-539).
+        self._manager.flush()
+        snapshots = self._manager.list_snapshots()
         listed = time.perf_counter()
         try:
             found, _ = self._describe_fingerprint(step, snapshots)

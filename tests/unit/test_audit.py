@@ -265,6 +265,8 @@ class TestMoonclipBackendFingerprint:
         )
         backend._manager = SimpleNamespace(
             save_tensors=save_tensors,
+            # The wait for the writer: list_snapshots() does not wait (GPU-539).
+            flush=lambda: calls.append(("flush",)),
             describe=describe,
             list_snapshots=lambda: [{"step": k, "id": v} for k, v in store.items()],
             last_queue_wait=lambda: 0.0,
@@ -275,7 +277,7 @@ class TestMoonclipBackendFingerprint:
         backend.save(3, {}, {})
         phases = backend.save(6, {}, {})
 
-        assert calls == [("save", 3), ("describe", "id3"), ("save", 6)]
+        assert calls == [("save", 3), ("flush",), ("describe", "id3"), ("save", 6)]
         assert backend.fingerprint(3) == (
             audit.tensor_fingerprint([described("w", "id3")]),
             "sha256:tensor-xxh3",

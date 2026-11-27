@@ -13,6 +13,15 @@
   anything else. Under Moonclip the same comes from Moonclip's own reader,
   in Moonclip 0.4.3, which this release now requires.
 
+### Fixed
+
+- **With the audit log and Moonclip, every checkpoint gets its fingerprint
+  (GPU-539).** The previous step was fingerprinted from `list_snapshots()`,
+  which since GPU-517 does not wait for a save in flight: a step still being
+  written was missed, and with `keep_last: 1` retention removed it before its
+  entry asked again, so the entry said `null`. The backend now waits for the
+  writer first.
+
 ## 0.20.1 — 2026-11-27
 
 ### Fixed
