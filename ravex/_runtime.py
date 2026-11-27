@@ -3763,9 +3763,14 @@ class RavexRuntime:
         # alone writes the checkpoint, and its random state is only rank 0's.
         # Each rank keeps its own beside the store for the resume (GPU-548).
         # Not under the outer loop, where every node has a store of its own and
-        # resumes on its own clock.
+        # resumes on its own clock. Only at a checkpoint and on the way out, not
+        # at the saves of a delta window: those come at every step on a rank
+        # whose own Moonclip writes nothing, and rewriting the file there
+        # halved the run's speed. A rank killed outright resumes at the last
+        # checkpoint either way, since it writes nothing on the way out.
         if (
-            self.config.track_rng and get_world_size() > 1
+            (final or emergency or self.registry.step_count % self.config.checkpoint_every == 0)
+            and self.config.track_rng and get_world_size() > 1
             and not self._per_rank_active() and not self.config.outer_loop
         ):
             from ravex import _rank_rng
