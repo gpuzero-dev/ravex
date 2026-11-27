@@ -258,8 +258,10 @@ _PREFIX = "ravex"
 #: two checkpoints itself, from what they cost (`window_steps`, `wants`):
 #: Ravex no longer weighs deltas or watches the link (GPU-517). 0.4.2 is the
 #: first that drops the history a resume left when an older step is saved,
-#: so the latest step is the last one saved (GPU-530).
-MOONCLIP_FLOOR = (0, 4, 2)
+#: so the latest step is the last one saved (GPU-530). 0.4.3 is the first
+#: whose restore builds plain data only: with an older one, whoever can
+#: write to the store can run code in the process that resumes (GPU-538).
+MOONCLIP_FLOOR = (0, 4, 3)
 
 
 class RemoteNeedsMoonclip(RuntimeError):
