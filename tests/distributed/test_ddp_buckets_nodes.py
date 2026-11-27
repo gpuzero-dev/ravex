@@ -104,7 +104,8 @@ def train():
     for p in inner.parameters():
         # Under FSDP a parameter is a shard; the whole one is a collective.
         whole = p.full_tensor() if hasattr(p, "full_tensor") else p
-        digest.update(whole.detach().cpu().numpy().tobytes())
+        # Through torch, not numpy: the CI job that runs this has no numpy.
+        digest.update(bytes(whole.detach().cpu().contiguous().view(torch.uint8).flatten().tolist()))
     if dist.get_rank() == 0:
         print("weights", ravex.step(), digest.hexdigest(), flush=True)
 
