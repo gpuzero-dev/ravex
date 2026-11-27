@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.2 — 2026-11-27
 
 ### Security
 
@@ -11,7 +11,7 @@
   They now go through `ravex._safe_load.load`: `weights_only=True`, plus
   NumPy's arrays and dtypes for NumPy's RNG state, and `UnsafeCheckpoint` on
   anything else. Under Moonclip the same comes from Moonclip's own reader,
-  in the release that carries GPU-538.
+  in Moonclip 0.4.3, which this release now requires.
 
 ## 0.20.1 — 2026-11-27
 
