@@ -459,10 +459,22 @@ class RavexRuntime:
             check_moonclip_version()
 
         # Before the first save allocates anything large, so memory a save
-        # frees goes back to the system (GPU-443, ravex._memory).
+        # frees goes back to the system (GPU-443, ravex._memory). Only with
+        # CUDA: training on the CPU, every activation over the threshold
+        # became an mmap and a munmap per step, and 8 DDP ranks ran at 31
+        # steps/s instead of 52. On a GPU activations are CUDA's, not malloc's.
+        # shortcut: a CPU run on a CUDA machine still pays it; check the
+        # model's device at the first save if that case ever matters.
         from ravex._memory import hold_the_threshold
 
-        hold_the_threshold()
+        try:
+            import torch
+
+            cuda = torch.cuda.is_available()
+        except Exception:
+            cuda = False
+        if cuda:
+            hold_the_threshold()
 
         try:
             from ravex._frameworks import detect_framework, get_adapter

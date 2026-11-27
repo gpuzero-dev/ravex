@@ -22,6 +22,16 @@
   node has its own store. `tests/distributed/test_ddp_buckets_nodes.py`
   proves it on 3 and 8 ranks, with a rank SIGKILLed mid-run among them.
 
+- **Training on the CPU runs at PyTorch's own speed again (GPU-443).** Since
+  0.14.4 a run held glibc's mmap threshold at 128 KB, so that memory a
+  checkpoint frees goes back to the system. On a GPU that costs nothing, but
+  on the CPU every activation over the threshold became an `mmap` and a
+  `munmap` per step: 8 DDP ranks went at 31 steps/s where plain PyTorch
+  went at 52. The threshold is now held only on a machine with CUDA; a CPU
+  run gets 50-53. And the per-rank random state of GPU-548 is recorded at
+  checkpoints and on the way out, not at each save of a delta window, where
+  rewriting it at every step had brought the same run down to 18 steps/s.
+
 ## 0.21.1 — 2026-11-27
 
 ### Fixed

@@ -14,7 +14,10 @@ So :func:`hold_the_threshold` fixes the threshold at glibc's own default and
 the trim threshold with it, once, when a run starts. What it costs is an
 ``mmap`` and a ``munmap`` per large allocation, which is what the first one
 of a process gets anyway; the small ones, which are most of them, never
-reach it.
+reach it. Only on a machine with CUDA: there a step's activations are CUDA's,
+while training on the CPU they are malloc's, and every one over the threshold
+was an ``mmap`` and a ``munmap`` per step - 8 DDP ranks went from 52 to 31
+steps/s.
 
 A person who set ``MALLOC_MMAP_THRESHOLD_`` or ``MALLOC_TRIM_THRESHOLD_`` has
 said what they want, and is left alone. Anything but Linux with glibc is too:
