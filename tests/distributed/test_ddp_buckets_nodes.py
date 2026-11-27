@@ -125,6 +125,9 @@ def run(cwd, steps, mode, ranks, optimizer):
     env = dict(
         os.environ, STEPS=str(steps), MODE=mode, OPT=optimizer, MOONCLIP_FSYNC="0",
         OMP_NUM_THREADS="1", CUBLAS_WORKSPACE_CONFIG=":4096:8",
+        # Passed on by hand: the conftest clears every RAVEX_* variable before
+        # a test runs, so the children would otherwise fall back to gloo.
+        RAVEX_TEST_CUDA="1" if CUDA else "0",
     )
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=600, env=env)
     assert result.returncode == 0, result.stderr[-3000:]
