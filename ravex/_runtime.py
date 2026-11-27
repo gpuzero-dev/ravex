@@ -3762,7 +3762,12 @@ class RavexRuntime:
         # Before the rank gate, on every rank and with no peer involved: rank 0
         # alone writes the checkpoint, and its random state is only rank 0's.
         # Each rank keeps its own beside the store for the resume (GPU-548).
-        if self.config.track_rng and get_world_size() > 1 and not self._per_rank_active():
+        # Not under the outer loop, where every node has a store of its own and
+        # resumes on its own clock.
+        if (
+            self.config.track_rng and get_world_size() > 1
+            and not self._per_rank_active() and not self.config.outer_loop
+        ):
             from ravex import _rank_rng
 
             _rank_rng.save(

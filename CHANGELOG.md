@@ -13,9 +13,14 @@
   and matched 28 steps of 400. Each rank now records its own state at every
   checkpoint, beside the store (`<storage.path>.rng`) and with no collective,
   so the save on the way out still works when the peers are gone; on resume
-  each rank takes its own back for the checkpoint's step. A rank that finds
-  none - its machine and disk are gone - continues with rank 0's and logs it.
-  `tests/distributed/test_ddp_buckets_nodes.py` proves it on 3 and 8 ranks.
+  each rank takes its own back for the checkpoint's step. A rank killed
+  outright records nothing on the way out, while the survivors' rank 0 still
+  writes a checkpoint as it stops; so the ranks agree on the newest step every
+  one of them recorded and resume there - a few steps trained again, and the
+  same run. A rank that has no record at all - its machine and disk are gone -
+  continues with rank 0's and logs it. Not under the outer loop, where every
+  node has its own store. `tests/distributed/test_ddp_buckets_nodes.py`
+  proves it on 3 and 8 ranks, with a rank SIGKILLed mid-run among them.
 
 ## 0.21.1 — 2026-11-27
 

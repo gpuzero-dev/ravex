@@ -74,6 +74,12 @@ def load(storage_path: str, rank: int, step: int) -> Optional[Dict[str, Any]]:
     return None if rng is None else _restored(rng)
 
 
+def steps(storage_path: str, rank: int) -> list:
+    """The steps this rank recorded its own state for, oldest first."""
+    kept = _read(_file(storage_path, rank))
+    return sorted(kept) if kept else []
+
+
 def _plain(rng: Dict[str, Any]) -> Dict[str, Any]:
     """Generator states as plain lists, so the file loads with ``weights_only``.
     NumPy's is there only when the program's own NumPy was there to read."""

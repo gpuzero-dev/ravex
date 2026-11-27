@@ -337,7 +337,10 @@ class ResumeManager:
             return False
 
         try:
-            state: Optional[Dict[str, Any]] = self.backend.load_latest()
+            older = self._step_every_rank_holds()
+            state: Optional[Dict[str, Any]] = (
+                self.backend.load_step(older) if older is not None else self.backend.load_latest()
+            )
         except Exception as exc:
             state = self._fall_back(exc)
         if not state:
@@ -1208,6 +1211,48 @@ class ResumeManager:
             _several_runs(seen),
         )
 
+    def _step_every_rank_holds(self) -> Optional[int]:
+        """An older checkpoint than the newest, when not every rank recorded its
+        own random state at the newest; None when the newest will do (GPU-548).
+
+        Rank 0 writes the checkpoint for everybody, and each rank records its
+        own random state beside it. A rank killed outright records nothing on
+        the way out, so the checkpoint the survivors wrote while stopping has no
+        state of that rank's: resuming there would hand it rank 0's generator
+        and the run would go another way. So, as for per-rank stores, the ranks
+        agree on the newest step every one of them holds and resume there - a
+        few steps more to train again, and the same run. **Collective**, and
+        every rank of a multi-rank resume reaches it.
+        """
+        from ravex._dist.collectives import agree_on_step, get_rank, get_world_size
+
+        if self.config is None or get_world_size() <= 1 or getattr(self.config, "outer_loop", False):
+            # Under the outer loop every node has its own store and resumes on
+            # its own clock: there is nothing shared to agree on, and the
+            # rendezvous may already be gone for a node that starts late.
+            return None
+        if not getattr(self.config, "track_rng", True):
+            return None
+        from ravex import _rank_rng
+
+        newest = self.backend.latest_step()
+        if newest is None:
+            return None
+        known = set(self.backend.known_steps() or [])
+        mine = [s for s in _rank_rng.steps(self.config.storage.path, get_rank()) if s <= newest and s in known]
+        # A rank with no record at all cannot be made exact by going back; it
+        # holds nobody else back, and `_own_rng` says what it does instead.
+        local = mine[-1] if mine else newest
+        agreed = agree_on_step(local)
+        if agreed >= newest:
+            return None
+        logger.info(
+            "Resuming at step %d, not the newest (%d): it is the newest step every rank "
+            "recorded its own random state for, so every rank continues its own run",
+            agreed, newest,
+        )
+        return agreed
+
     def _own_rng(self, state: Dict[str, Any], step: int) -> Dict[str, Any]:
         """The checkpoint with this rank's own random state in it (GPU-548).
 
@@ -1219,6 +1264,8 @@ class ResumeManager:
         from ravex._dist.collectives import get_rank, get_world_size
 
         if self._per_rank or self.config is None or get_world_size() <= 1:
+            return state
+        if getattr(self.config, "outer_loop", False):
             return state
         if not getattr(self.config, "track_rng", True) or "rng" not in state:
             return state

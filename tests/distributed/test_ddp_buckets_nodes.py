@@ -119,6 +119,9 @@ def train():
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
+            if os.environ.get("DIE_AT") and ravex.step() == int(os.environ["DIE_AT"]) and dist.get_rank() == 1:
+                # A machine that vanishes: no handler runs, nothing is written on the way out.
+                os.kill(os.getpid(), 9)
     digest = hashlib.sha256()
     for p in inner.parameters():
         # Under FSDP a parameter is a shard; the whole one is a collective.
@@ -138,7 +141,7 @@ if __name__ == "__main__":
 '''
 
 
-def run(cwd, steps, mode, ranks, optimizer, data="sampler"):
+def run(cwd, steps, mode, ranks, optimizer, data="sampler", die_at=None):
     command = [
         sys.executable, "-m", "torch.distributed.run", "--nproc-per-node", str(ranks), "train.py"
     ]
@@ -152,8 +155,12 @@ def run(cwd, steps, mode, ranks, optimizer, data="sampler"):
         # exception" (GPU-547): on a SIGABRT this prints every thread's Python
         # stack, which is what says whose thread was still running.
         PYTHONFAULTHANDLER="1",
+        DIE_AT=str(die_at or ""),
     )
     result = subprocess.run(command, cwd=cwd, capture_output=True, text=True, timeout=600, env=env)
+    if die_at:
+        assert result.returncode != 0, "rank 1 was to die at step %d" % die_at
+        return []
     assert result.returncode == 0, result.stderr[-3000:]
     return [line for line in result.stdout.splitlines() if line.startswith(("start", "weights"))]
 
@@ -200,6 +207,26 @@ def test_a_resume_gives_each_rank_its_own_random_state(tmp_path, ranks):
 
     reference = run(whole, 12, "ddp", ranks, "sgd", data="rng")
     assert run(stopped, 6, "ddp", ranks, "sgd", data="rng")[-1].split()[1] == "6"
+    resumed = run(stopped, 12, "ddp", ranks, "sgd", data="rng")
+
+    assert int(resumed[0].split()[1]) > 0, resumed
+    assert resumed[-1] == reference[-1]
+
+
+def test_a_rank_killed_outright_does_not_cost_the_run_its_exactness(tmp_path):
+    """GPU-548: rank 1 dies by SIGKILL at step 8 and records nothing more; the
+    others stop, and rank 0 writes a checkpoint at step 8 that has no random
+    state of rank 1's. Resuming there would hand rank 1 rank 0's generator, so
+    the ranks agree on the newest step every one of them recorded (6) and the
+    run that continues is the same one."""
+    ranks = 3
+    whole, stopped = tmp_path / "whole", tmp_path / "stopped"
+    for directory in (whole, stopped):
+        directory.mkdir()
+        (directory / "train.py").write_text(SCRIPT, encoding="utf-8")
+
+    reference = run(whole, 12, "ddp", ranks, "sgd", data="rng")
+    run(stopped, 12, "ddp", ranks, "sgd", data="rng", die_at=8)
     resumed = run(stopped, 12, "ddp", ranks, "sgd", data="rng")
 
     assert int(resumed[0].split()[1]) > 0, resumed
